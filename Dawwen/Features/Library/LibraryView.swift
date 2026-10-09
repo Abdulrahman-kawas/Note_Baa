@@ -1,0 +1,179 @@
+import SwiftData
+import SwiftUI
+import UniformTypeIdentifiers
+
+struct LibraryView: View {
+    @Environment(\.modelContext) private var context
+    @Query(sort: \Lecture.createdAt, order: .reverse) private var lectures: [Lecture]
+    @State private var selection: UUID?
+    @State private var search = ""
+    @State private var showNewLecture = false
+    @State private var showSettings = false
+    @State private var showImporter = false
+    @State private var activeRecording: NewLectureRequest?
+    @State private var pendingRecording: NewLectureRequest?
+    @State private var importError: String?
+
+    private var filtered: [Lecture] {
+        let query = search.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return lectures }
+        return lectures.filter { lecture in
+            lecture.title.localizedStandardContains(query)
+                || lecture.segments.contains { $0.text.localizedStandardContains(query) || ($0.translation?.localizedStandardContains(query) ?? false) }
+        }
+    }
+
+    var body: some View {
+        NavigationSplitView {
+            List(selection: $selection) {
+                ForEach(filtered) { lecture in
+                    LectureRow(lecture: lecture)
+                        .tag(lecture.id)
+                }
+                .onDelete(perform: delete)
+            }
+            .navigationTitle("دوّن")
+            .searchable(text: $search, prompt: "ابحث في العناوين والنصوص")
+            .overlay {
+                if lectures.isEmpty {
+                    ContentUnavailableView {
+                        Label("لا محاضرات بعد", systemImage: "waveform.badge.mic")
+                    } description: {
+                        Text("ابدأ تسجيلاً جديداً، أو استورد ملفاً صوتياً.")
+                    } actions: {
+                        Button("تسجيل جديد") { showNewLecture = true }
+                            .buttonStyle(.borderedProminent)
+                    }
+                } else if filtered.isEmpty {
+                    ContentUnavailableView.search(text: search)
+                }
+            }
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        showNewLecture = true
+                    } label: {
+                        Label("تسجيل جديد", systemImage: "record.circle")
+                    }
+                }
+                ToolbarItem {
+                    Button {
+                        showImporter = true
+                    } label: {
+                        Label("استيراد ملف صوتي", systemImage: "square.and.arrow.down")
+                    }
+                }
+                ToolbarItem {
+                    Button {
+                        showSettings = true
+                    } label: {
+                        Label("الإعدادات", systemImage: "gearshape")
+                    }
+                }
+            }
+        } detail: {
+            if let selection, let lecture = lectures.first(where: { $0.id == selection }) {
+                LectureDetailView(lecture: lecture)
+                    .id(lecture.id)
+            } else {
+                ContentUnavailableView("اختر محاضرة", systemImage: "text.bubble", description: Text("النص والترجمة والملخص يظهرون هنا."))
+            }
+        }
+        // The recording screen opens only after the sheet has finished closing.
+        .sheet(isPresented: $showNewLecture, onDismiss: {
+            if let request = pendingRecording {
+                pendingRecording = nil
+                activeRecording = request
+            }
+        }) {
+            NewLectureSheet { request in
+                pendingRecording = request
+                showNewLecture = false
+            }
+        }
+        .fullScreenCover(item: $activeRecording) { request in
+            RecordingView(request: request) { lectureID in
+                activeRecording = nil
+                selection = lectureID
+            }
+        }
+        .sheet(isPresented: $showSettings) {
+            SettingsView()
+        }
+        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.audio]) { result in
+            importAudio(result)
+        }
+        .alert("تعذّر الاستيراد", isPresented: Binding(get: { importError != nil }, set: { if !$0 { importError = nil } })) {
+            Button("حسناً", role: .cancel) {}
+        } message: {
+            Text(importError ?? "")
+        }
+    }
+
+    private func delete(at offsets: IndexSet) {
+        for index in offsets {
+            let lecture = filtered[index]
+            if selection == lecture.id { selection = nil }
+            LectureStore.deleteFiles(for: lecture)
+            context.delete(lecture)
+        }
+        try? context.save()
+    }
+
+    /// Copies the file into the app; the detail view then offers to transcribe it.
+    private func importAudio(_ result: Result<URL, Error>) {
+        guard case .success(let url) = result else { return }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let settings = AppSettings.current
+        let lecture = Lecture(
+            title: url.deletingPathExtension().lastPathComponent,
+            sourceLanguage: settings.sourceLanguage,
+            targetLanguage: settings.translationEnabled ? settings.targetLanguage : nil,
+            engine: .apple
+        )
+        do {
+            let folder = try LectureStore.createFolder(for: lecture.id)
+            let name = "imported." + (url.pathExtension.isEmpty ? "m4a" : url.pathExtension.lowercased())
+            let destination = folder.appending(path: name)
+            try FileManager.default.copyItem(at: url, to: destination)
+            lecture.audioSegments = [name]
+            lecture.duration = LectureStore.duration(of: [destination])
+            lecture.status = .ready
+            lecture.transcriptionIncomplete = true
+            context.insert(lecture)
+            try context.save()
+            selection = lecture.id
+        } catch {
+            importError = error.localizedDescription
+        }
+    }
+}
+
+private struct LectureRow: View {
+    let lecture: Lecture
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(lecture.title)
+                .font(.headline)
+                .lineLimit(2)
+            HStack(spacing: 8) {
+                Text(lecture.createdAt, format: .dateTime.day().month(.abbreviated).hour().minute())
+                Text("·")
+                Text(TimeFormat.duration(lecture.duration))
+                if lecture.summary != nil {
+                    Image(systemName: "sparkles").accessibilityLabel("ملخص جاهز")
+                }
+                if lecture.status == .interrupted {
+                    Label("مستعادة", systemImage: "exclamationmark.triangle")
+                        .labelStyle(.titleAndIcon)
+                        .foregroundStyle(.orange)
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 2)
+    }
+}
