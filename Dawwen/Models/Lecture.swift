@@ -15,7 +15,7 @@ enum LectureStatus: String, Codable {
 /// Every new property is optional, so the move from V1 is a lightweight migration.
 enum SchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
-    static var models: [any PersistentModel.Type] { [Lecture.self, TranscriptSegment.self] }
+    static var models: [any PersistentModel.Type] { [Lecture.self, TranscriptSegment.self, QAEntry.self] }
 
     @Model
     final class Lecture {
@@ -54,6 +54,9 @@ enum SchemaV2: VersionedSchema {
         var summaryJobID: String?
         var refineJobID: String?
         var translationRefinedAt: Date?
+        /// Questions asked about this lecture, newest last.
+        @Relationship(deleteRule: .cascade, inverse: \QAEntry.lecture)
+        var questions: [QAEntry] = []
 
         init(title: String, sourceLanguage: String, targetLanguage: String?, engine: EngineKind) {
             self.id = UUID()

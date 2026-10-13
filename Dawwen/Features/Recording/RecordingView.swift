@@ -11,6 +11,7 @@ struct RecordingView: View {
     @State private var controller = RecordingController()
     @State private var confirmStop = false
     @State private var followLive = true
+    @State private var lectureMode = false
 
     var body: some View {
         NavigationStack {
@@ -31,9 +32,21 @@ struct RecordingView: View {
             }
             .navigationTitle(request.title)
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        lectureMode = true
+                    } label: {
+                        Label("وضع المحاضرة", systemImage: "moon.fill")
+                    }
+                }
+            }
             .overlay {
                 if controller.phase == .finished { finishedCard }
                 if case .failed(let message) = controller.phase { failedCard(message) }
+            }
+            .overlay {
+                if lectureMode { lectureModeCover }
             }
         }
         .translationTask(controller.translationConfiguration) { session in
@@ -55,6 +68,24 @@ struct RecordingView: View {
     }
 
     // MARK: - Parts
+
+    /// Darkens the screen during the lecture so it is easier on the eyes. Recording goes on underneath;
+    /// a tap brings the screen back.
+    private var lectureModeCover: some View {
+        Color.black.opacity(0.94)
+            .ignoresSafeArea()
+            .overlay {
+                VStack(spacing: 12) {
+                    Image(systemName: "moon.fill")
+                    Text("وضع المحاضرة: التسجيل مستمر")
+                    Text("اضغط في أي مكان للعودة")
+                        .font(.footnote)
+                }
+                .foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { lectureMode = false }
+    }
 
     private var header: some View {
         VStack(spacing: 10) {
