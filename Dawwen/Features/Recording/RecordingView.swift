@@ -12,6 +12,7 @@ struct RecordingView: View {
     @State private var confirmStop = false
     @State private var followLive = true
     @State private var lectureMode = false
+    @State private var showSlideCapture = false
 
     var body: some View {
         NavigationStack {
@@ -47,6 +48,9 @@ struct RecordingView: View {
             }
             .overlay {
                 if lectureMode { lectureModeCover }
+            }
+            .sheet(isPresented: $showSlideCapture) {
+                SlideCaptureView { controller.addSlideText($0) }
             }
         }
         .translationTask(controller.translationConfiguration) { session in
@@ -167,6 +171,14 @@ struct RecordingView: View {
                 controller.addBookmark()
             } label: {
                 Label("علامة", systemImage: "bookmark.fill")
+                    .labelStyle(.verticalIcon)
+            }
+            .disabled(controller.phase != .recording)
+
+            Button {
+                showSlideCapture = true
+            } label: {
+                Label("شريحة", systemImage: "camera.viewfinder")
                     .labelStyle(.verticalIcon)
             }
             .disabled(controller.phase != .recording)

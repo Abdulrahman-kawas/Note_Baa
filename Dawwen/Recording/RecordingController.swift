@@ -42,6 +42,7 @@ final class RecordingController {
     @ObservationIgnored private var recorder: SegmentedRecorder?
     @ObservationIgnored private var transcriber: (any LiveTranscriber)?
     @ObservationIgnored private let feed = TranscriberFeed()
+    @ObservationIgnored private let liveActivity = LectureActivityController()
     @ObservationIgnored private var eventsTask: Task<Void, Never>?
     @ObservationIgnored private var meterTask: Task<Void, Never>?
     @ObservationIgnored private var engineTask: Task<Void, Never>?
@@ -133,6 +134,7 @@ final class RecordingController {
         UIApplication.shared.isIdleTimerDisabled = settings.keepScreenOn
         startMeter()
         phase = .recording
+        liveActivity.start(title: request.title, startedAt: .now)
         engineName = "تجهيز التفريغ…"
 
         Task { await RecordingAlerts.requestAuthorization() }
@@ -234,6 +236,7 @@ final class RecordingController {
         recorder?.pause()
         pausedByInterruption = false
         phase = .paused("متوقف مؤقتاً")
+        liveActivity.setPaused(true)
     }
 
     func resume() {
@@ -248,6 +251,7 @@ final class RecordingController {
             try AudioSessionController.activateForRecording(allowBluetooth: allowBluetooth)
             try recorder.resume()
             phase = .recording
+            liveActivity.setPaused(false)
             pausedByInterruption = false
             lastProgressAt = .now
             return true
@@ -255,6 +259,24 @@ final class RecordingController {
             banner = "تعذّر الاستئناف: \(error.localizedDescription)"
             return false
         }
+    }
+
+    /// Adds text read from a slide, timed at the current point in the recording.
+    func addSlideText(_ lines: [String]) {
+        guard let lecture, isActive else { return }
+        let texts = lines
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !texts.isEmpty else { return }
+        for text in texts {
+            let segment = TranscriptSegment(start: elapsed, end: elapsed, text: text, speaker: "شريحة")
+            context?.insert(segment)
+            segment.lecture = lecture
+            liveSegments.append(segment)
+            segmentsByID[segment.uid] = segment
+        }
+        save()
+        banner = "أُضيف نص \(texts.count) من الشريحة عند \(TimeFormat.clock(elapsed))"
     }
 
     func addBookmark() {
@@ -269,6 +291,7 @@ final class RecordingController {
         guard let lecture else {
             // Stopped while still asking for permission: nothing was recorded.
             phase = .finished
+            liveActivity.end()
             releaseLock()
             return
         }
@@ -293,6 +316,7 @@ final class RecordingController {
         tearDownObservers()
         translationQueue.finishWhenDrained()
         phase = .finished
+        liveActivity.end()
         try? LectureArchive.write(lecture)
         BackupUploader.shared.enqueue(lecture, includeArchive: true)
     }
@@ -393,6 +417,7 @@ final class RecordingController {
         recorder?.pause()
         pausedByInterruption = true
         phase = .paused("أُوقف التسجيل مؤقتاً بسبب مقاطعة (مكالمة أو تطبيق آخر).")
+        liveActivity.setPaused(true)
     }
 
     /// A recorder must come back even without `.shouldResume`: try, then tell the student.
@@ -418,6 +443,7 @@ final class RecordingController {
             banner = "أعاد النظام تشغيل خدمات الصوت، واستمر التسجيل."
         } catch {
             phase = .paused("توقفت خدمات الصوت في النظام. اضغط استئناف.")
+            liveActivity.setPaused(true)
             pausedByInterruption = false
             RecordingAlerts.post("التسجيل متوقف", "أعاد النظام تشغيل خدمات الصوت. افتح «دوّن» واضغط استئناف.")
         }

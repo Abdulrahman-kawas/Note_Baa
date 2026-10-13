@@ -14,5 +14,9 @@
 	<false/>
 	<key>CFBundleAllowMixedLocalizations</key>
 	<false/>
+	<key>NSCameraUsageDescription</key>
+	<string>يلتقط «دوّن» نص الشرائح والسبورة ليضيفه إلى المحاضرة.</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 </dict>
 </plist>

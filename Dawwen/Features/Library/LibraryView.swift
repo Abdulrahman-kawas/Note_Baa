@@ -105,6 +105,13 @@ struct LibraryView: View {
                 ContentUnavailableView("اختر محاضرة", systemImage: "text.bubble", description: Text("النص والترجمة والملخص يظهرون هنا."))
             }
         }
+        // A Shortcut or Siri asked for a new lecture.
+        .onAppear {
+            if LectureRouter.shared.consumeNewLectureRequest() { showNewLecture = true }
+        }
+        .onChange(of: LectureRouter.shared.newLectureRequested) { _, requested in
+            if requested, LectureRouter.shared.consumeNewLectureRequest() { showNewLecture = true }
+        }
         // The recording screen opens only after the sheet has finished closing.
         .sheet(isPresented: $showNewLecture, onDismiss: {
             if let request = pendingRecording {
