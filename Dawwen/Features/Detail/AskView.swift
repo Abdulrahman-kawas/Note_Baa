@@ -20,19 +20,21 @@ final class AskSession {
 
     func ask(_ question: String, about lecture: Lecture) {
         var entry = Entry(question: question)
-        guard let key = KeychainStore.read(.anthropic) else {
+        let settings = AppSettings.current
+        // Haiku by default: a question re-reads the cached transcript for a fraction of a cent.
+        guard let client = ClaudeClient.current(model: settings.askModel) else {
             entry.error = ClaudeClient.ClaudeError.missingKey.localizedDescription
             entry.isStreaming = false
             entries.append(entry)
             return
         }
-        let settings = AppSettings.current
-        let client = ClaudeClient(apiKey: key, model: settings.claudeModel)
-        // Same preamble, transcript and effort as the summary request, so the cached prefix is reused.
+        // Same preamble and transcript as the summary request, so the cached system prefix is reused
+        // (the cache is per model: summary and questions share it only when they use the same model).
         let request = ClaudeClient.Request(
             preamble: LecturePrompt.preamble(for: lecture),
             context: LecturePrompt.transcript(for: lecture),
             userMessage: LecturePrompt.questionRequest(question, outputLanguage: settings.summaryLanguage),
+            effort: "medium",
             maxTokens: 16_000
         )
         entries.append(entry)

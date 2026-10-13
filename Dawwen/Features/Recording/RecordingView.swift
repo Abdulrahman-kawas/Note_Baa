@@ -43,7 +43,7 @@ struct RecordingView: View {
             await controller.start(request, context: context)
         }
         .interactiveDismissDisabled(controller.isActive)
-        .onDisappear { controller.abandon() }
+        .onDisappear { controller.dismantle() }
         .confirmationDialog("إنهاء التسجيل؟", isPresented: $confirmStop, titleVisibility: .visible) {
             Button("إنهاء وحفظ", role: .destructive) {
                 Task { await controller.stop() }
@@ -73,6 +73,14 @@ struct RecordingView: View {
                 if controller.translationQueue.pendingCount > 0 {
                     Text("·")
                     Text("بانتظار الترجمة: \(controller.translationQueue.pendingCount)")
+                }
+                if controller.translationQueue.failedCount > 0 {
+                    Text("·")
+                    Text("تعذّرت ترجمة \(controller.translationQueue.failedCount)").foregroundStyle(.orange)
+                }
+                if controller.gapSeconds >= 5 {
+                    Text("·")
+                    Text("دون نص: \(TimeFormat.clock(controller.gapSeconds))").foregroundStyle(.orange)
                 }
             }
             .font(.footnote)
@@ -164,7 +172,12 @@ struct RecordingView: View {
             Text("\(TimeFormat.duration(controller.elapsed)) · \(controller.liveSegments.count) جملة")
                 .foregroundStyle(.secondary)
             if controller.translationQueue.pendingCount > 0 {
-                Label("تُستكمل ترجمة \(controller.translationQueue.pendingCount) جملة…", systemImage: "character.bubble")
+                Label("تُترجم \(controller.translationQueue.pendingCount) جملة الآن؛ ما يتبقى يُترجم تلقائياً عند فتح المحاضرة.", systemImage: "character.bubble")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            if controller.gapSeconds >= 5 {
+                Label("\(TimeFormat.duration(controller.gapSeconds)) دون نص لحظي؛ أكملها من صفحة المحاضرة.", systemImage: "text.badge.plus")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

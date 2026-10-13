@@ -17,3 +17,11 @@ xcuserdata/
 
 # macOS
 .DS_Store
+
+# Server
+server/.env
+server/.aws-sam/
+__pycache__/
+.pytest_cache/
+*.pyc
+.venv/

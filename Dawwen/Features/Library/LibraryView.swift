@@ -13,14 +13,33 @@ struct LibraryView: View {
     @State private var activeRecording: NewLectureRequest?
     @State private var pendingRecording: NewLectureRequest?
     @State private var importError: String?
+    @State private var searchHits: Set<UUID> = []
+    @State private var restoreMessage: String?
 
     private var filtered: [Lecture] {
         let query = search.trimmingCharacters(in: .whitespaces)
         guard !query.isEmpty else { return lectures }
-        return lectures.filter { lecture in
-            lecture.title.localizedStandardContains(query)
-                || lecture.segments.contains { $0.text.localizedStandardContains(query) || ($0.translation?.localizedStandardContains(query) ?? false) }
+        return lectures.filter { $0.title.localizedStandardContains(query) || searchHits.contains($0.id) }
+    }
+
+    /// The store runs the text match, not a loop over every phrase in memory (0.1 loaded them all
+    /// on every keystroke).
+    private func runSearch(_ text: String) async {
+        let query = text.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else {
+            searchHits = []
+            return
         }
+        try? await Task.sleep(for: .milliseconds(250)) // debounce typing
+        guard !Task.isCancelled else { return }
+        var descriptor = FetchDescriptor<TranscriptSegment>(predicate: #Predicate { segment in
+            segment.text.localizedStandardContains(query)
+                || (segment.translation?.localizedStandardContains(query) ?? false)
+                || (segment.refinedTranslation?.localizedStandardContains(query) ?? false)
+        })
+        descriptor.fetchLimit = 5_000
+        let segments = (try? context.fetch(descriptor)) ?? []
+        searchHits = Set(segments.compactMap { $0.lecture?.id })
     }
 
     var body: some View {
@@ -34,6 +53,7 @@ struct LibraryView: View {
             }
             .navigationTitle("دوّن")
             .searchable(text: $search, prompt: "ابحث في العناوين والنصوص")
+            .task(id: search) { await runSearch(search) }
             .overlay {
                 if lectures.isEmpty {
                     ContentUnavailableView {
@@ -43,6 +63,12 @@ struct LibraryView: View {
                     } actions: {
                         Button("تسجيل جديد") { showNewLecture = true }
                             .buttonStyle(.borderedProminent)
+                        // After a database reset: rebuild the library from each folder's lecture.json.
+                        Button("استعادة المحاضرات من ملفاتها") {
+                            let count = (try? LectureArchive.restoreAll(into: context)) ?? 0
+                            restoreMessage = count == 0 ? "لا محاضرات محفوظة للاستعادة." : "استُعيدت \(count) محاضرة."
+                        }
+                        if let restoreMessage { Text(restoreMessage).font(.footnote) }
                     }
                 } else if filtered.isEmpty {
                     ContentUnavailableView.search(text: search)

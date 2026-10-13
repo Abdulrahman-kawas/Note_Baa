@@ -14,7 +14,7 @@ struct TranscriptListView: View {
         let text = query.trimmingCharacters(in: .whitespaces)
         guard !text.isEmpty else { return segments }
         return segments.filter {
-            $0.text.localizedStandardContains(text) || ($0.translation?.localizedStandardContains(text) ?? false)
+            $0.text.localizedStandardContains(text) || ($0.bestTranslation?.localizedStandardContains(text) ?? false)
         }
     }
 
@@ -38,7 +38,13 @@ struct TranscriptListView: View {
     private var bookmarkedIDs: Set<UUID> {
         var ids = Set<UUID>()
         for mark in lecture.bookmarks {
-            if let segment = segments.last(where: { $0.start <= mark }) { ids.insert(segment.uid) }
+            // Binary search, like activeID: segments are sorted by start.
+            var low = 0, high = segments.count - 1, found = -1
+            while low <= high {
+                let middle = (low + high) / 2
+                if segments[middle].start <= mark { found = middle; low = middle + 1 } else { high = middle - 1 }
+            }
+            if found >= 0 { ids.insert(segments[found].uid) }
         }
         return ids
     }
@@ -88,10 +94,15 @@ struct TranscriptListView: View {
                 .padding(.vertical, 4)
             }
         }
-        .task(id: lecture.segments.count) {
+        .task(id: TranscriptVersion(count: lecture.segments.count, refinedAt: lecture.translationRefinedAt)) {
             segments = lecture.sortedSegments
         }
     }
+}
+
+private struct TranscriptVersion: Equatable {
+    let count: Int
+    let refinedAt: Date?
 }
 
 private struct TranscriptRow: View {
@@ -124,7 +135,7 @@ private struct TranscriptRow: View {
                     }
                     Text(segment.text)
                         .textDirection(rightToLeft: segment.text.isMostlyRTL)
-                    if showTranslation, let translation = segment.translation {
+                    if showTranslation, let translation = segment.bestTranslation {
                         Text(translation)
                             .foregroundStyle(.blue)
                             .textDirection(rightToLeft: translation.isMostlyRTL)

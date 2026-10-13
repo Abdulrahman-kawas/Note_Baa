@@ -10,14 +10,17 @@ struct LectureDetailView: View {
     @State private var summaryJob = SummaryJob()
     @State private var askSession = AskSession()
     @State private var translationQueue = TranslationQueue()
+    /// Fallback only: languages not installed → `.translationTask` asks to download them.
     @State private var translationConfiguration: TranslationSession.Configuration?
     @State private var tab: DetailTab = .transcript
     @State private var showTranslation = true
-    @State private var transcribeTask: Task<Void, Never>?
     @State private var status: String?
     @State private var confirmRetranscribe = false
     @State private var showRename = false
     @State private var draftTitle = ""
+
+    private var work: BackgroundWork { BackgroundWork.shared }
+    private var isWorking: Bool { work.running.contains(lecture.id) }
 
     enum DetailTab: String, CaseIterable, Identifiable {
         case transcript, summary, ask, bookmarks
@@ -42,7 +45,7 @@ struct LectureDetailView: View {
 
             infoLine
 
-            if lecture.transcriptionIncomplete && transcribeTask == nil {
+            if lecture.transcriptionIncomplete && !isWorking {
                 incompleteBanner
             }
 
@@ -67,20 +70,25 @@ struct LectureDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbar }
         .task(id: lecture.audioSegments) {
-            await player.load(urls: LectureStore.audioURLs(for: lecture))
+            await player.load(urls: LectureStore.audioURLs(for: lecture), title: lecture.title)
+        }
+        .task(id: lecture.id) {
+            // Whatever the recording screen left behind: refined translations, then missing ones.
+            await collectRefinement()
+            await translateMissing(automatic: true)
         }
         .onDisappear {
             player.teardown()
-            transcribeTask?.cancel()
+            // Gap filling and refinement belong to BackgroundWork and keep running.
         }
         .translationTask(translationConfiguration) { session in
             await translationQueue.run(with: session)
         }
-        .confirmationDialog("إعادة التفريغ من الصوت؟", isPresented: $confirmRetranscribe, titleVisibility: .visible) {
-            Button("استبدال النص الحالي", role: .destructive) { transcribeFromAudio() }
+        .confirmationDialog("استبدال النص كاملاً؟", isPresented: $confirmRetranscribe, titleVisibility: .visible) {
+            Button("فرّغ الصوت كله من جديد واحذف النص الحالي", role: .destructive) { retranscribeEverything() }
             Button("إلغاء", role: .cancel) {}
         } message: {
-            Text("يُفرَّغ التسجيل كاملاً على الجهاز ويحل محل النص والترجمة الحاليين.")
+            Text("يحذف كل الجمل وترجماتها وأسماء المتحدثين ويستبدلها بتفريغ Apple على الجهاز. لإكمال الأجزاء الناقصة فقط استخدم «أكمل النص الناقص».")
         }
         .alert("إعادة تسمية المحاضرة", isPresented: $showRename) {
             TextField("العنوان", text: $draftTitle)
@@ -104,12 +112,20 @@ struct LectureDetailView: View {
             Text(TimeFormat.duration(lecture.duration))
             Text("·")
             Text(Languages.name(for: lecture.sourceLanguage))
-            if let status {
+            if let message = work.status[lecture.id] ?? status {
                 Text("·")
-                Text(status).foregroundStyle(.blue)
+                Text(message).foregroundStyle(.blue)
             } else if translationQueue.pendingCount > 0 {
                 Text("·")
                 Text("بانتظار الترجمة: \(translationQueue.pendingCount)").foregroundStyle(.blue)
+            }
+            if translationQueue.failedCount > 0 {
+                Text("·")
+                Text("تعذّرت ترجمة \(translationQueue.failedCount)").foregroundStyle(.orange)
+            }
+            if lecture.refineJobID != nil {
+                Text("·")
+                Label("تحسين الترجمة على الخادم", systemImage: "clock").foregroundStyle(.secondary)
             }
             Spacer()
         }
@@ -121,12 +137,12 @@ struct LectureDetailView: View {
 
     private var incompleteBanner: some View {
         HStack {
-            Label("جزء من الصوت لم يُفرَّغ بعد.", systemImage: "exclamationmark.bubble")
+            let seconds = lecture.untranscribedSeconds
+            Label(seconds > 0 ? "\(TimeFormat.duration(seconds)) من الصوت دون نص." : "جزء من الصوت لم يُفرَّغ بعد.",
+                  systemImage: "exclamationmark.bubble")
             Spacer()
-            Button("فرّغ من الصوت") {
-                lecture.segments.isEmpty ? transcribeFromAudio() : (confirmRetranscribe = true)
-            }
-            .buttonStyle(.bordered)
+            Button("أكمل النص الناقص") { fillGaps() }
+                .buttonStyle(.bordered)
         }
         .font(.footnote)
         .padding(.horizontal)
@@ -163,14 +179,30 @@ struct LectureDetailView: View {
                 }
                 .pickerStyle(.menu)
                 Button {
-                    translateMissing()
+                    Task { await translateMissing(automatic: false) }
                 } label: {
                     Label("ترجمة الجمل غير المترجمة", systemImage: "translate")
                 }
                 Button {
-                    lecture.segments.isEmpty ? transcribeFromAudio() : (confirmRetranscribe = true)
+                    refineTranslation()
                 } label: {
-                    Label("إعادة التفريغ من الصوت", systemImage: "waveform.badge.magnifyingglass")
+                    Label("حسّن الترجمة بالسياق والمسرد (Claude)", systemImage: "wand.and.stars")
+                }
+                .disabled(isWorking || lecture.segments.isEmpty)
+                Button {
+                    fillGaps()
+                } label: {
+                    Label("أكمل النص الناقص من الصوت", systemImage: "text.badge.plus")
+                }
+                .disabled(isWorking)
+                Button(role: .destructive) {
+                    lecture.segments.isEmpty ? retranscribeEverything() : (confirmRetranscribe = true)
+                } label: {
+                    Label("استبدال النص كاملاً بتفريغ جديد", systemImage: "waveform.badge.magnifyingglass")
+                }
+                .disabled(isWorking)
+                if isWorking {
+                    Button("إيقاف العملية الجارية", role: .cancel) { work.cancel(lectureID: lecture.id) }
                 }
                 Button {
                     draftTitle = lecture.title
@@ -184,20 +216,22 @@ struct LectureDetailView: View {
         }
     }
 
-    // MARK: - Actions
+    // MARK: - Translation
 
-    private func translateMissing() {
+    /// Automatic on open: only with installed languages (no prompts). Manual: may ask to download.
+    private func translateMissing(automatic: Bool) async {
         let target = lecture.targetLanguage ?? AppSettings.current.targetLanguage
         guard Languages.code(target) != Languages.code(lecture.sourceLanguage) else {
-            status = "لغة الترجمة هي نفس لغة المحاضرة."
+            if !automatic { status = "لغة الترجمة هي نفس لغة المحاضرة." }
+            return
+        }
+        if automatic && lecture.targetLanguage == nil { return }
+        let missing = lecture.sortedSegments.filter { $0.translation == nil }
+        guard !missing.isEmpty else {
+            if !automatic { status = "كل الجمل مترجمة." }
             return
         }
         lecture.targetLanguage = target
-        let missing = lecture.sortedSegments.filter { $0.translation == nil }
-        guard !missing.isEmpty else {
-            status = "كل الجمل مترجمة."
-            return
-        }
         let byID = Dictionary(uniqueKeysWithValues: missing.map { ($0.uid, $0) })
         let context = context
         translationQueue.onTranslated = { id, text in
@@ -207,43 +241,85 @@ struct LectureDetailView: View {
         translationQueue.removeAll()
         missing.forEach { translationQueue.enqueue(id: $0.uid, text: $0.text) }
         status = nil
-        if translationConfiguration == nil {
-            translationConfiguration = TranslationSession.Configuration(
-                source: Locale.Language(identifier: lecture.sourceLanguage),
-                target: Locale.Language(identifier: target)
-            )
-        } else {
-            translationConfiguration?.invalidate()
+        if let session = await TranslationSupport.installedSession(source: lecture.sourceLanguage, target: target, purpose: .document) {
+            translationQueue.finishWhenDrained()
+            await translationQueue.run(with: session)
+        } else if !automatic {
+            if translationConfiguration == nil {
+                translationConfiguration = TranslationSession.Configuration(
+                    source: Locale.Language(identifier: lecture.sourceLanguage),
+                    target: Locale.Language(identifier: target)
+                )
+            } else {
+                translationConfiguration?.invalidate()
+            }
         }
     }
 
-    private func transcribeFromAudio() {
-        transcribeTask?.cancel()
-        let urls = LectureStore.audioURLs(for: lecture)
-        let language = lecture.sourceLanguage
-        let vocabulary = AppSettings.current.vocabulary
-        status = "تجهيز التفريغ…"
-        transcribeTask = Task {
-            do {
-                let segments = try await FileTranscriber.transcribe(urls: urls, language: language, vocabulary: vocabulary) { message in
-                    Task { @MainActor in status = message }
+    private func refineTranslation() {
+        let settings = AppSettings.current
+        if settings.refineEngine != "now", let server = ServerClient.current {
+            Task {
+                do {
+                    try await TranslationRefiner.submit(lecture, server: server, engine: settings.refineEngine)
+                    try? context.save()
+                    status = "أُرسل تحسين الترجمة إلى الخادم؛ يكتمل خلال ساعة تقريباً."
+                } catch {
+                    status = error.localizedDescription
                 }
-                try Task.checkCancellation()
-                for old in lecture.segments { context.delete(old) }
-                for item in segments {
-                    let segment = TranscriptSegment(start: item.start, end: item.end, text: item.text)
-                    context.insert(segment)
-                    segment.lecture = lecture
-                }
-                lecture.transcriptionIncomplete = false
-                try? context.save()
-                status = "اكتمل التفريغ: \(segments.count) جملة"
-            } catch is CancellationError {
-                status = nil
-            } catch {
-                status = error.localizedDescription
             }
-            transcribeTask = nil
+            return
+        }
+        let lecture = lecture
+        let context = context
+        work.start(lectureID: lecture.id, title: "تحسين ترجمة «\(lecture.title)»") { progress in
+            let changed = try await TranslationRefiner.refineNow(lecture, context: context, progress: progress)
+            return "حُسّنت ترجمة \(changed) جملة."
+        }
+    }
+
+    private func collectRefinement() async {
+        guard lecture.refineJobID != nil, let server = ServerClient.current else { return }
+        if (try? await TranslationRefiner.collect(lecture, server: server, context: context)) == true,
+           lecture.translationRefinedAt != nil {
+            status = "وصلت الترجمة المحسّنة."
+        }
+    }
+
+    // MARK: - Transcription
+
+    private func fillGaps() {
+        let lecture = lecture
+        let context = context
+        work.start(lectureID: lecture.id, title: "إكمال نص «\(lecture.title)»") { progress in
+            let added = try await GapFiller.fill(lecture, context: context, progress: progress)
+            return added == 0 ? "لا جمل جديدة في الأجزاء الناقصة." : "أُضيفت \(added) جملة من الصوت."
+        }
+    }
+
+    /// 0.1 behaviour, now explicit and confirmed: replaces everything with Apple's file transcription.
+    private func retranscribeEverything() {
+        let lecture = lecture
+        let context = context
+        work.start(lectureID: lecture.id, title: "تفريغ «\(lecture.title)» من جديد") { progress in
+            let urls = LectureStore.audioURLs(for: lecture)
+            let segments = try await FileTranscriber.transcribe(
+                urls: urls, language: lecture.sourceLanguage, vocabulary: AppSettings.current.vocabulary
+            ) { message in
+                Task { @MainActor in progress(0.5, message) }
+            }
+            try Task.checkCancellation()
+            for old in lecture.segments { context.delete(old) }
+            for item in segments {
+                let segment = TranscriptSegment(start: item.start, end: item.end, text: item.text)
+                context.insert(segment)
+                segment.lecture = lecture
+            }
+            lecture.gaps = []
+            lecture.transcriptionIncomplete = false
+            try context.save()
+            try? LectureArchive.write(lecture)
+            return "اكتمل التفريغ: \(segments.count) جملة"
         }
     }
 

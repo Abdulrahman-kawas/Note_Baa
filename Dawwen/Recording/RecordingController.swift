@@ -7,7 +7,10 @@ import UIKit
 import os
 
 /// Runs one lecture: microphone → part files + live transcriber → SwiftData + translation.
-/// Recording never depends on transcription: if the transcriber fails, recording continues.
+///
+/// Rules: the recorder starts first and never waits for anything else; whatever audio the
+/// transcriber misses becomes a recorded gap that the detail view can fill later; any stop the
+/// student did not ask for is retried and, failing that, announced with a notification.
 @MainActor
 @Observable
 final class RecordingController {
@@ -29,19 +32,36 @@ final class RecordingController {
     private(set) var banner: String?
     private(set) var lecture: Lecture?
     private(set) var liveSegments: [TranscriptSegment] = []
+    /// Set only when the language pair is not installed: the view's `.translationTask` then asks
+    /// to download it (the direct session can't).
     private(set) var translationConfiguration: TranslationSession.Configuration?
+    /// Seconds of audio with no live transcript so far (shown in the header).
+    private(set) var gapSeconds: Double = 0
 
     @ObservationIgnored let translationQueue = TranslationQueue()
     @ObservationIgnored private var recorder: SegmentedRecorder?
-    @ObservationIgnored private var transcriber: LiveTranscriber?
+    @ObservationIgnored private var transcriber: (any LiveTranscriber)?
+    @ObservationIgnored private let feed = TranscriberFeed()
     @ObservationIgnored private var eventsTask: Task<Void, Never>?
     @ObservationIgnored private var meterTask: Task<Void, Never>?
+    @ObservationIgnored private var engineTask: Task<Void, Never>?
+    @ObservationIgnored private var translationTask: Task<Void, Never>?
+    @ObservationIgnored private var transcodes: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var thermalObserver: NSObjectProtocol?
     @ObservationIgnored private var context: ModelContext?
     @ObservationIgnored private var segmentsByID: [UUID: TranscriptSegment] = [:]
     @ObservationIgnored private let audioSession = AudioSessionController()
-    @ObservationIgnored private let feedGate = FeedGate()
     @ObservationIgnored private var suspendedForHeat = false
+    @ObservationIgnored private var pausedByInterruption = false
+    @ObservationIgnored private var allowBluetooth = false
+    @ObservationIgnored private var lastProgressSeconds: Double = -1
+    @ObservationIgnored private var lastProgressAt = Date()
+    @ObservationIgnored private var stallAttempts = 0
+    @ObservationIgnored private var meterTicks = 0
+
+    /// One recording at a time, even with two windows of the app open.
+    private static var activeRecording: ObjectIdentifier?
+    private static let log = Logger(subsystem: "com.dawwen", category: "recording")
 
     var isActive: Bool {
         switch phase {
@@ -50,79 +70,115 @@ final class RecordingController {
         }
     }
 
+    private var isRecordingSession: Bool {
+        switch phase {
+        case .recording, .paused: true
+        default: false
+        }
+    }
+
     // MARK: - Start
 
     func start(_ request: NewLectureRequest, context: ModelContext) async {
         guard phase == .idle else { return }
+        guard Self.activeRecording == nil else {
+            phase = .failed("يوجد تسجيل جارٍ في نافذة أخرى. أنهِه أولاً.")
+            return
+        }
+        Self.activeRecording = ObjectIdentifier(self)
         self.context = context
         let settings = AppSettings.current
+        allowBluetooth = settings.allowBluetoothMic
 
         phase = .preparing("طلب إذن المايكروفون…")
         guard await AVAudioApplication.requestRecordPermission() else {
-            phase = .failed("لم يُسمح باستخدام المايكروفون. فعّله من الإعدادات ← الخصوصية ← المايكروفون.")
+            fail("لم يُسمح باستخدام المايكروفون. فعّله من الإعدادات ← الخصوصية ← المايكروفون.")
             return
         }
-
-        let kind = await TranscriberFactory.resolve(
-            request.engine, language: request.language, hasSonioxKey: KeychainStore.read(.soniox) != nil
-        )
-        if kind == .apple {
-            // SpeechAnalyzer transcribed without this permission in testing (macOS 26.5). Asking once
-            // costs a dialog; a refusal is not treated as fatal, the engine reports any real failure.
-            _ = await Self.requestSpeechAuthorization()
+        guard phase != .finished, phase != .finishing else { return } // the view went away meanwhile
+        if let storage = StorageGuard.status() {
+            if storage.isCritical {
+                fail("المساحة الحرة \(storage.description) فقط. احذف ملفات ثم أعد المحاولة.")
+                return
+            }
+            if storage.isLow { banner = "المساحة الحرة قليلة (\(storage.description))." }
         }
 
-        let lecture = Lecture(title: request.title, sourceLanguage: request.language, targetLanguage: request.targetLanguage, engine: kind)
+        // The microphone starts now. The engine is resolved and prepared afterwards, in parallel.
+        let lecture = Lecture(title: request.title, sourceLanguage: request.language, targetLanguage: request.targetLanguage, engine: request.engine)
         do {
             try LectureStore.createFolder(for: lecture.id)
         } catch {
-            phase = .failed("تعذّر إنشاء مجلد المحاضرة: \(error.localizedDescription)")
+            fail("تعذّر إنشاء مجلد المحاضرة: \(error.localizedDescription)")
             return
         }
         context.insert(lecture)
-        try? context.save()
+        save()
         self.lecture = lecture
-
-        await startTranscriber(kind, request: request, vocabulary: settings.vocabulary)
-        configureTranslation(source: request.language, target: request.targetLanguage)
-
         do {
             try startRecorder(for: lecture)
         } catch {
-            phase = .failed("تعذّر بدء التسجيل: \(error.localizedDescription)")
-            await transcriber?.finish()
             lecture.status = .interrupted
-            try? context.save()
+            save()
+            fail("تعذّر بدء التسجيل: \(error.localizedDescription)")
             return
         }
 
         audioSession.onInterruptionBegan = { [weak self] in self?.interruptionBegan() }
         audioSession.onInterruptionEnded = { [weak self] shouldResume in self?.interruptionEnded(shouldResume: shouldResume) }
+        audioSession.onMediaServicesReset = { [weak self] in self?.mediaServicesWereReset() }
         audioSession.startObserving()
         observeThermalState()
         warnIfBatteryLow()
         UIApplication.shared.isIdleTimerDisabled = settings.keepScreenOn
         startMeter()
         phase = .recording
+        engineName = "تجهيز التفريغ…"
+
+        Task { await RecordingAlerts.requestAuthorization() }
+        configureTranslation(source: request.language, target: request.targetLanguage)
+        engineTask = Task { [weak self] in
+            await self?.attachTranscriber(request, vocabulary: settings.vocabulary)
+        }
     }
 
-    private func startTranscriber(_ kind: EngineKind, request: NewLectureRequest, vocabulary: [String]) async {
+    private func attachTranscriber(_ request: NewLectureRequest, vocabulary: [String]) async {
+        let kind = await TranscriberFactory.resolve(
+            request.engine, language: request.language, hasSonioxKey: SonioxCredentials.isConfigured
+        )
+        guard isRecordingSession, let lecture else { return }
+        lecture.engineRaw = kind.rawValue
+        save()
         guard kind != .none else {
             engineName = EngineKind.none.title
-            lecture?.transcriptionIncomplete = true
+            feed.detach(reason: .recordOnly)
             return
         }
-        phase = .preparing("تجهيز محرك التفريغ…")
+        if kind == .apple {
+            // SpeechAnalyzer transcribed without this permission in testing; asking once is cheap.
+            _ = await Self.requestSpeechAuthorization()
+        }
+        var created: (any LiveTranscriber)?
         do {
-            guard let transcriber = try TranscriberFactory.make(kind, language: request.language, vocabulary: vocabulary) else { return }
-            try await transcriber.start()
+            guard let transcriber = try TranscriberFactory.make(
+                kind, language: request.language, vocabulary: vocabulary, translationTarget: request.targetLanguage
+            ) else { return }
+            created = transcriber
+            consumeEvents(of: transcriber)
+            try await transcriber.start()   // may download the language model the first time
+            guard isRecordingSession else {
+                await transcriber.finish()
+                return
+            }
             self.transcriber = transcriber
             engineName = transcriber.displayName
-            consumeEvents(of: transcriber)
+            feed.attach(transcriber)
+            evaluateThermalState()
         } catch {
-            banner = "تعذّر تشغيل التفريغ اللحظي: \(error.localizedDescription) التسجيل يعمل، ويمكن التفريغ من الصوت لاحقاً."
+            await created?.finish()
+            banner = "تعذّر تشغيل التفريغ اللحظي: \(error.localizedDescription) التسجيل يعمل، والجزء غير المفرَّغ يُكمَل من الصوت بعد المحاضرة."
             engineName = EngineKind.none.title
-            lecture?.transcriptionIncomplete = true
+            feed.detach(reason: .engineFailed)
         }
     }
 
@@ -131,29 +187,38 @@ final class RecordingController {
         translationQueue.onTranslated = { [weak self] id, text in
             guard let self, let segment = self.segmentsByID[id] else { return }
             segment.translation = text
-            try? self.context?.save()
+            self.save()
         }
-        translationConfiguration = TranslationSession.Configuration(
-            source: Locale.Language(identifier: source),
-            target: Locale.Language(identifier: target)
-        )
+        let queue = translationQueue
+        translationTask = Task { [weak self] in
+            // Installed languages: a session that needs no view, keeps going with the screen locked
+            // (measure on device), and never shows a download prompt in the middle of a lecture.
+            if let session = await TranslationSupport.installedSession(source: source, target: target, purpose: .live) {
+                await queue.run(with: session)
+            } else {
+                self?.banner = "لغة الترجمة غير منزّلة على الجهاز. نزّلها من الإعدادات قبل المحاضرة القادمة؛ سيُطلب التنزيل الآن."
+                self?.translationConfiguration = TranslationSession.Configuration(
+                    source: Locale.Language(identifier: source), target: Locale.Language(identifier: target)
+                )
+            }
+        }
     }
 
     private func startRecorder(for lecture: Lecture) throws {
-        try AudioSessionController.activateForRecording()
+        try AudioSessionController.activateForRecording(allowBluetooth: allowBluetooth)
         let recorder = SegmentedRecorder(folder: LectureStore.folder(for: lecture.id))
-        let gate = feedGate
-        let transcriber = transcriber
+        let feed = feed
         recorder.bufferHandler = { buffer, startFrame in
-            guard gate.isOpen else { return }
-            transcriber?.append(buffer, startFrame: startFrame)
+            feed.feed(buffer, startFrame: startFrame)
         }
-        recorder.partHandler = { [weak self] name in
-            Task { @MainActor in
-                guard let self, let lecture = self.lecture else { return }
-                lecture.audioSegments.append(name)
-                try? self.context?.save()
-            }
+        feed.onGap = { [weak self] gap in
+            Task { @MainActor in self?.recordGap(gap) }
+        }
+        recorder.partOpenedHandler = { [weak self] _ in
+            Task { @MainActor in self?.refreshParts() }
+        }
+        recorder.partClosedHandler = { [weak self] name in
+            Task { @MainActor in self?.archivePart(name) }
         }
         recorder.failureHandler = { [weak self] message in
             Task { @MainActor in self?.banner = message }
@@ -167,55 +232,118 @@ final class RecordingController {
     func pause() {
         guard phase == .recording else { return }
         recorder?.pause()
+        pausedByInterruption = false
         phase = .paused("متوقف مؤقتاً")
     }
 
     func resume() {
-        guard case .paused = phase, let recorder else { return }
+        guard case .paused = phase else { return }
+        resumeRecording()
+    }
+
+    @discardableResult
+    private func resumeRecording() -> Bool {
+        guard let recorder else { return false }
         do {
-            try AudioSessionController.activateForRecording()
+            try AudioSessionController.activateForRecording(allowBluetooth: allowBluetooth)
             try recorder.resume()
             phase = .recording
+            pausedByInterruption = false
+            lastProgressAt = .now
+            return true
         } catch {
             banner = "تعذّر الاستئناف: \(error.localizedDescription)"
+            return false
         }
     }
 
     func addBookmark() {
         guard let lecture else { return }
         lecture.bookmarks.append(elapsed)
-        try? context?.save()
+        save()
         banner = "أُضيفت علامة عند \(TimeFormat.clock(elapsed))"
     }
 
     func stop() async {
-        guard isActive, let lecture else { return }
+        guard isActive else { return }
+        guard let lecture else {
+            // Stopped while still asking for permission: nothing was recorded.
+            phase = .finished
+            releaseLock()
+            return
+        }
         phase = .finishing
         meterTask?.cancel()
-        recorder?.stop()
+        engineTask?.cancel()
+        let lastPart = recorder?.stop()
         let duration = recorder?.meter.seconds ?? elapsed
+        if let gap = feed.close() { recordGap(gap) }
+        feed.detach(reason: .unknown)
         if let transcriber {
             await transcriber.finish()
             await eventsTask?.value
         }
         partialText = ""
+        if let lastPart { archivePart(lastPart) }
+        for task in Array(transcodes.values) { await task.value }
         lecture.duration = duration
         lecture.audioSegments = LectureStore.partFileNames(in: LectureStore.folder(for: lecture.id))
         lecture.status = .ready
-        try? context?.save()
+        save()
         tearDownObservers()
+        translationQueue.finishWhenDrained()
         phase = .finished
+        try? LectureArchive.write(lecture)
+        BackupUploader.shared.enqueue(lecture, includeArchive: true)
     }
 
-    /// Called if the view goes away while recording; saves what exists.
-    func abandon() {
-        guard isActive else { return }
-        Task { await stop() }
+    /// The recording screen is going away. Finish what was recorded; stop translating (what is
+    /// left is picked up automatically when the lecture is opened).
+    func dismantle() {
+        let translation = translationTask
+        if isActive {
+            Task {
+                await stop()
+                translation?.cancel()
+            }
+        } else {
+            translation?.cancel()
+        }
+    }
+
+    // MARK: - Parts
+
+    private func refreshParts() {
+        guard let lecture else { return }
+        lecture.audioSegments = LectureStore.partFileNames(in: LectureStore.folder(for: lecture.id))
+        save()
+    }
+
+    /// A closed PCM part becomes AAC off the main thread. If that fails, the CAF stays: it plays
+    /// and backs up like any other part.
+    private func archivePart(_ name: String) {
+        guard let lecture, transcodes[name] == nil else { return }
+        let url = LectureStore.folder(for: lecture.id).appending(path: name)
+        transcodes[name] = Task { [weak self] in
+            let failure = await Task.detached(priority: .utility) { () -> String? in
+                do {
+                    try AudioPartFile.transcodeToAAC(url)
+                    return nil
+                } catch {
+                    return error.localizedDescription
+                }
+            }.value
+            guard let self else { return }
+            self.transcodes[name] = nil
+            if let failure { Self.log.error("transcode \(name, privacy: .public) failed: \(failure, privacy: .public)") }
+            self.refreshParts()
+            if let lecture = self.lecture { BackupUploader.shared.enqueue(lecture, includeArchive: false) }
+        }
     }
 
     // MARK: - Events
 
-    private func consumeEvents(of transcriber: LiveTranscriber) {
+    private func consumeEvents(of transcriber: any LiveTranscriber) {
         eventsTask = Task { [weak self] in
             for await event in transcriber.events {
                 self?.handle(event)
@@ -234,30 +362,117 @@ final class RecordingController {
             segment.lecture = lecture
             liveSegments.append(segment)
             segmentsByID[segment.uid] = segment
-            try? context.save() // Every confirmed phrase is on disk at once.
-            if translationConfiguration != nil {
+            save() // Every confirmed phrase is on disk at once.
+            if lecture.targetLanguage != nil, translationQueue.onTranslated != nil {
                 translationQueue.enqueue(id: segment.uid, text: text)
             }
+        case .gap(let start, let end):
+            let reason: TranscriptGap.Reason = transcriber?.runsOnDevice == false ? .network : .overload
+            recordGap(TranscriptGap(start: start, end: end, reason: reason))
         case .status(let message):
             banner = message.isEmpty ? nil : message
         case .failure(let message):
-            banner = "توقف التفريغ اللحظي: \(message) التسجيل مستمر، ويمكن إكمال النص من الصوت بعد المحاضرة."
+            banner = "توقف التفريغ اللحظي: \(message) التسجيل مستمر، والجزء غير المفرَّغ يُكمَل من الصوت بعد المحاضرة."
+            feed.detach(reason: .engineFailed)
             lecture?.transcriptionIncomplete = true
+            save()
         }
     }
 
-    // MARK: - Interruptions, heat, battery
+    private func recordGap(_ gap: TranscriptGap) {
+        guard let lecture else { return }
+        lecture.addGap(gap)
+        gapSeconds = lecture.untranscribedSeconds
+        save()
+    }
+
+    // MARK: - Interruptions, media reset, stalls
 
     private func interruptionBegan() {
         guard phase == .recording else { return }
         recorder?.pause()
+        pausedByInterruption = true
         phase = .paused("أُوقف التسجيل مؤقتاً بسبب مقاطعة (مكالمة أو تطبيق آخر).")
     }
 
+    /// A recorder must come back even without `.shouldResume`: try, then tell the student.
     private func interruptionEnded(shouldResume: Bool) {
-        guard case .paused = phase else { return }
-        if shouldResume { resume() }
+        guard case .paused = phase, pausedByInterruption else { return }
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(shouldResume ? 200 : 800))
+            guard let self, case .paused = self.phase, self.pausedByInterruption else { return }
+            if !self.resumeRecording() {
+                RecordingAlerts.post("التسجيل متوقف", "انتهت المقاطعة ولم يُستأنف التسجيل. افتح «دوّن» واضغط استئناف.")
+            }
+        }
     }
+
+    /// Apple's general advice is to wait for the user after a media-server reset; a lecture the
+    /// student already started is that user action, so the recorder is rebuilt and restarted.
+    private func mediaServicesWereReset() {
+        guard isRecordingSession, let recorder else { return }
+        let wasRecording = phase == .recording
+        do {
+            try AudioSessionController.activateForRecording(allowBluetooth: allowBluetooth)
+            try recorder.rebuildAfterMediaServicesReset(startRunning: wasRecording)
+            banner = "أعاد النظام تشغيل خدمات الصوت، واستمر التسجيل."
+        } catch {
+            phase = .paused("توقفت خدمات الصوت في النظام. اضغط استئناف.")
+            pausedByInterruption = false
+            RecordingAlerts.post("التسجيل متوقف", "أعاد النظام تشغيل خدمات الصوت. افتح «دوّن» واضغط استئناف.")
+        }
+    }
+
+    private func startMeter() {
+        meterTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(250))
+                guard let self, let recorder = self.recorder else { return }
+                let meter = recorder.meter
+                self.elapsed = meter.seconds
+                self.level = meter.level
+                self.watchdog(seconds: meter.seconds)
+            }
+        }
+    }
+
+    /// No new audio for 5 s while "recording" means the engine died silently: restart it.
+    private func watchdog(seconds: Double) {
+        meterTicks += 1
+        if meterTicks % 240 == 0 { checkStorage() } // once a minute
+        guard phase == .recording else {
+            lastProgressAt = .now
+            return
+        }
+        if seconds > lastProgressSeconds {
+            lastProgressSeconds = seconds
+            lastProgressAt = .now
+            stallAttempts = 0
+            return
+        }
+        guard Date.now.timeIntervalSince(lastProgressAt) > 5 else { return }
+        stallAttempts += 1
+        lastProgressAt = .now
+        Self.log.error("no audio for 5 s, restart attempt \(self.stallAttempts)")
+        let restarted = resumeRecording()
+        banner = restarted ? "انقطع وصول الصوت لحظياً وأُعيد تشغيل المايكروفون." : "لا يصل صوت من المايكروفون."
+        if !restarted || stallAttempts >= 2 {
+            RecordingAlerts.post("تحقق من التسجيل", "لا يصل صوت من المايكروفون منذ ثوانٍ.")
+        }
+    }
+
+    private func checkStorage() {
+        guard let storage = StorageGuard.status() else { return }
+        if storage.freeBytes < 100_000_000 {
+            banner = "امتلأت مساحة الجهاز تقريباً؛ أُنهي التسجيل وحُفظ ما سُجّل."
+            RecordingAlerts.post("أُنهي التسجيل", "امتلأت مساحة الجهاز. حُفظ ما سُجّل حتى الآن.")
+            Task { await stop() }
+        } else if storage.isCritical {
+            banner = "المساحة الحرة \(storage.description) فقط."
+        }
+    }
+
+    // MARK: - Heat, battery
 
     private func observeThermalState() {
         thermalObserver = NotificationCenter.default.addObserver(
@@ -275,13 +490,12 @@ final class RecordingController {
         if state == .serious || state == .critical {
             guard !suspendedForHeat else { return }
             suspendedForHeat = true
-            feedGate.isOpen = false
-            lecture?.transcriptionIncomplete = true
+            feed.setGate(open: false, reason: .heat)
             banner = "حرارة الجهاز مرتفعة: أوقفنا التفريغ اللحظي مؤقتاً، والتسجيل مستمر."
         } else if suspendedForHeat, state == .nominal || state == .fair {
             suspendedForHeat = false
-            feedGate.isOpen = true
-            banner = "عاد التفريغ اللحظي. الجزء الفائت يُستكمل من الصوت بعد المحاضرة."
+            feed.setGate(open: true, reason: .heat)
+            banner = "عاد التفريغ اللحظي. الجزء الفائت يُكمَل من الصوت بعد المحاضرة."
         }
     }
 
@@ -293,16 +507,25 @@ final class RecordingController {
         }
     }
 
-    private func startMeter() {
-        meterTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(100))
-                guard let self, let recorder = self.recorder else { return }
-                let meter = recorder.meter
-                self.elapsed = meter.seconds
-                self.level = meter.level
-            }
+    // MARK: - Helpers
+
+    private func fail(_ message: String) {
+        phase = .failed(message)
+        tearDownObservers()
+    }
+
+    private func save() {
+        guard let context else { return }
+        do {
+            try context.save()
+        } catch {
+            Self.log.error("save failed: \(error.localizedDescription, privacy: .public)")
+            banner = "تعذّر حفظ آخر التغييرات: \(error.localizedDescription)"
         }
+    }
+
+    private func releaseLock() {
+        if Self.activeRecording == ObjectIdentifier(self) { Self.activeRecording = nil }
     }
 
     private func tearDownObservers() {
@@ -311,6 +534,7 @@ final class RecordingController {
         if let thermalObserver { NotificationCenter.default.removeObserver(thermalObserver) }
         thermalObserver = nil
         UIApplication.shared.isIdleTimerDisabled = false
+        releaseLock()
     }
 
     private static func requestSpeechAuthorization() async -> SFSpeechRecognizerAuthorizationStatus {
@@ -319,16 +543,6 @@ final class RecordingController {
         return await withCheckedContinuation { continuation in
             SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0) }
         }
-    }
-}
-
-/// Lets the audio thread skip the transcriber (heat) without touching the main actor.
-final class FeedGate: @unchecked Sendable {
-    private let state = OSAllocatedUnfairLock(initialState: true)
-
-    var isOpen: Bool {
-        get { state.withLock { $0 } }
-        set { state.withLock { $0 = newValue } }
     }
 }
 

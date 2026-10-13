@@ -124,7 +124,10 @@ final class AppleSpeechEngine: LiveTranscriber, @unchecked Sendable {
         }
         let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [module.speechModule])
             ?? SegmentedRecorder.pipelineFormat
-        let (stream, input) = AsyncStream<AnalyzerInput>.makeStream()
+        // Bounded: if the analyzer falls behind (older iPad, heat), new audio is dropped and reported
+        // as a gap instead of growing memory until the system kills the app, and the recording with it.
+        // ~1,200 tap buffers ≈ 100 s of audio ≈ 6 MB.
+        let (stream, input) = AsyncStream<AnalyzerInput>.makeStream(bufferingPolicy: .bufferingOldest(1_200))
 
         switch module {
         case .speech(let transcriber):
@@ -149,7 +152,11 @@ final class AppleSpeechEngine: LiveTranscriber, @unchecked Sendable {
               let converted = try? converter.convert(buffer, to: analyzerFormat) else { return }
         // The exact position in the recording keeps timestamps right after pauses and heat stops.
         let start = CMTime(value: CMTimeValue(startFrame), timescale: CMTimeScale(SegmentedRecorder.sampleRate))
-        input.yield(AnalyzerInput(buffer: converted, bufferStartTime: start))
+        if case .dropped = input.yield(AnalyzerInput(buffer: converted, bufferStartTime: start)) {
+            let seconds = start.seconds
+            let length = Double(converted.frameLength) / converted.format.sampleRate
+            continuation.yield(.gap(start: seconds, end: seconds + length))
+        }
     }
 
     func finish() async {

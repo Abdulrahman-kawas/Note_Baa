@@ -1,17 +1,21 @@
 import AVFoundation
 
-/// Owns the shared AVAudioSession: category per use, plus interruption events.
+/// Owns the shared AVAudioSession: category per use, plus interruption and media-reset events.
 @MainActor
 final class AudioSessionController {
     var onInterruptionBegan: (() -> Void)?
     var onInterruptionEnded: ((_ shouldResume: Bool) -> Void)?
+    /// The media server restarted: every audio object must be rebuilt.
+    var onMediaServicesReset: (() -> Void)?
 
     private var observers: [NSObjectProtocol] = []
 
-    static func activateForRecording() throws {
+    /// `.record` takes the built-in, wired or USB-C microphone; a clip-on wireless mic's USB-C
+    /// receiver shows up as USB and needs nothing more. Bluetooth HFP is narrow-band (8–16 kHz) and
+    /// hurts recognition, so it is opt-in (Settings ▸ أثناء التسجيل).
+    static func activateForRecording(allowBluetooth: Bool = false) throws {
         let session = AVAudioSession.sharedInstance()
-        // .record keeps the built-in (or a wired/USB) microphone; AirPods would pick up the student, not the lecturer.
-        try session.setCategory(.record, mode: .default, options: [])
+        try session.setCategory(.record, mode: .default, options: allowBluetooth ? [.allowBluetoothHFP] : [])
         try session.setActive(true)
     }
 
@@ -31,6 +35,10 @@ final class AudioSessionController {
         observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
             let info = note.userInfo ?? [:]
             MainActor.assumeIsolated { self?.handleInterruption(info) }
+        })
+        // Posted on the main thread; no userInfo.
+        observers.append(center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.onMediaServicesReset?() }
         })
     }
 
