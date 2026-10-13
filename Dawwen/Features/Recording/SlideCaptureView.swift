@@ -53,15 +53,26 @@ struct SlideCaptureView: View {
 
 /// Lets SwiftUI read the text the scanner currently sees.
 @MainActor
-final class SlideScanBridge {
-    fileprivate weak var scanner: DataScannerViewController?
+final class SlideScanBridge: NSObject, DataScannerViewControllerDelegate {
+    private var items: [RecognizedItem] = []
 
     func currentText() -> [String] {
-        guard let scanner else { return [] }
-        return scanner.recognizedItems.compactMap { item in
+        items.compactMap { item in
             if case .text(let text) = item { return text.transcript }
             return nil
         }
+    }
+
+    func dataScanner(_ dataScanner: DataScannerViewController, didAdd addedItems: [RecognizedItem], allItems: [RecognizedItem]) {
+        items = allItems
+    }
+
+    func dataScanner(_ dataScanner: DataScannerViewController, didUpdate updatedItems: [RecognizedItem], allItems: [RecognizedItem]) {
+        items = allItems
+    }
+
+    func dataScanner(_ dataScanner: DataScannerViewController, didRemove removedItems: [RecognizedItem], allItems: [RecognizedItem]) {
+        items = allItems
     }
 }
 
@@ -77,7 +88,7 @@ private struct SlideScannerRepresentable: UIViewControllerRepresentable {
             isGuidanceEnabled: true,
             isHighlightingEnabled: true
         )
-        bridge.scanner = scanner
+        scanner.delegate = bridge
         try? scanner.startScanning()
         return scanner
     }
