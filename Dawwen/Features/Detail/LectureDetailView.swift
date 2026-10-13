@@ -258,6 +258,8 @@ struct LectureDetailView: View {
 
     private func refineTranslation() {
         let settings = AppSettings.current
+        let lecture = lecture
+        let context = context
         if settings.refineEngine != "now", let server = ServerClient.current {
             Task {
                 do {
@@ -270,8 +272,6 @@ struct LectureDetailView: View {
             }
             return
         }
-        let lecture = lecture
-        let context = context
         work.start(lectureID: lecture.id, title: "تحسين ترجمة «\(lecture.title)»") { progress in
             let changed = try await TranslationRefiner.refineNow(lecture, context: context, progress: progress)
             return "حُسّنت ترجمة \(changed) جملة."
