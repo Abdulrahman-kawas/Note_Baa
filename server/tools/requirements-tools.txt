@@ -1,0 +1,6 @@
+boto3==1.43.103
+jiwer==4.0.0
+faster-whisper==1.2.1
+soundfile==0.14.0
+numpy==2.5.3
+websockets==17.1

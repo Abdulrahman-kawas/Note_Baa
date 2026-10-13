@@ -6,6 +6,8 @@ enum KeychainStore {
     enum Key: String {
         case anthropic = "anthropic_api_key"
         case soniox = "soniox_api_key"
+        /// "<device id>.<secret>" for the Dawwen gateway.
+        case gatewayToken = "gateway_token"
     }
 
     private static let service = "com.dawwen.api-keys"

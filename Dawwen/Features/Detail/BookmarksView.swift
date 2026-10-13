@@ -10,8 +10,10 @@ struct BookmarksView: View {
     private var marks: [Double] { lecture.bookmarks.sorted() }
 
     var body: some View {
+        let sorted = lecture.sortedSegments // once per render, not twice per row
         List {
             ForEach(marks, id: \.self) { mark in
+                let snippet = sorted.last(where: { $0.start <= mark })?.text ?? ""
                 Button {
                     player.seek(to: max(0, mark - 5)) // Start a little before the tap.
                     player.play()
@@ -20,10 +22,10 @@ struct BookmarksView: View {
                         Image(systemName: "bookmark.fill").foregroundStyle(.orange)
                         Text(TimeFormat.clock(mark))
                             .monospacedDigit()
-                        Text(snippet(at: mark))
+                        Text(snippet)
                             .lineLimit(2)
                             .foregroundStyle(.secondary)
-                            .textDirection(rightToLeft: snippet(at: mark).isMostlyRTL)
+                            .textDirection(rightToLeft: snippet.isMostlyRTL)
                     }
                 }
             }
@@ -38,9 +40,5 @@ struct BookmarksView: View {
                 ContentUnavailableView("لا علامات", systemImage: "bookmark", description: Text("اضغط «علامة» أثناء التسجيل لتمييز لحظة مهمة."))
             }
         }
-    }
-
-    private func snippet(at time: Double) -> String {
-        lecture.sortedSegments.last(where: { $0.start <= time })?.text ?? ""
     }
 }

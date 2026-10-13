@@ -6,22 +6,36 @@ import Foundation
 /// Protocol (soniox.com/docs/stt/api-reference/websocket-api): authenticate with a Bearer header,
 /// send one JSON config, stream raw PCM as binary frames, end with an empty text frame. Final
 /// tokens arrive once; non-final tokens are re-sent with each response; `<end>` closes a phrase.
-/// One connection accepts up to 300 minutes of audio; a 3.5-hour lecture is 210.
+/// One connection accepts up to 300 minutes of audio; a 4-hour lecture is 240.
+///
+/// Reliability: audio sent but not yet finalized when a connection drops is sent again on the next
+/// connection (replay buffer, 30 s); audio that cannot be sent at all becomes a `.gap` event.
 final class SonioxEngine: LiveTranscriber, @unchecked Sendable {
+    typealias KeyProvider = @Sendable () async throws -> String
+
     let displayName = "Soniox stt-rt-v5"
     let runsOnDevice = false
     let events: AsyncStream<TranscriptionEvent>
 
     private static let endpoint = URL(string: "wss://stt-rt.soniox.com/transcribe-websocket")!
     private static let model = "stt-rt-v5"
+    private static let bytesPerSecond = Int(SegmentedRecorder.sampleRate) * 2
     /// Audio kept while reconnecting: 120 s of 16-bit 16 kHz mono.
-    private static let maxPendingBytes = 16_000 * 2 * 120
+    private static let maxPendingBytes = bytesPerSecond * 120
+    /// Audio already sent that may still lack final text, re-sent after a reconnect.
+    private static let maxReplayBytes = bytesPerSecond * 30
     /// Close a phrase that runs this long without a pause, at the next sentence end.
     private static let softPhraseLimit = 20.0
     private static let hardPhraseLimit = 40.0
 
+    private struct Chunk {
+        let frame: AVAudioFramePosition
+        let data: Data
+        var endFrame: AVAudioFramePosition { frame + AVAudioFramePosition(data.count / 2) }
+    }
+
     private let continuation: AsyncStream<TranscriptionEvent>.Continuation
-    private let apiKey: String
+    private let keyProvider: KeyProvider
     private let languageHints: [String]
     private let terms: [String]
     private let session = URLSession(configuration: .default)
@@ -30,11 +44,17 @@ final class SonioxEngine: LiveTranscriber, @unchecked Sendable {
     // Everything below is confined to `queue`.
     private var socket: URLSessionWebSocketTask?
     private var isConnected = false
+    private var isConnecting = false
     private var isFinishing = false
     private var isClosed = false
+    private var connectGeneration = 0
     private var streamStartFrame: AVAudioFramePosition?
-    private var pending: [(frame: AVAudioFramePosition, data: Data)] = []
+    private var pending: [Chunk] = []
     private var pendingBytes = 0
+    private var sent: [Chunk] = []
+    private var sentBytes = 0
+    /// End of the audio Soniox has returned final text for (recording frames).
+    private var lastFinalFrame: AVAudioFramePosition?
     private var lastSend = Date.distantPast
     private var reconnectAttempt = 0
     private var keepAliveTimer: DispatchSourceTimer?
@@ -45,9 +65,13 @@ final class SonioxEngine: LiveTranscriber, @unchecked Sendable {
     private var phraseEnd: Double = 0
     private var phraseSpeaker: String?
 
-    init(apiKey: String, language: String, terms: [String]) {
-        self.apiKey = apiKey
-        self.languageHints = [Languages.code(language)]
+    init(keyProvider: @escaping KeyProvider, language: String, terms: [String], secondaryLanguage: String? = nil) {
+        self.keyProvider = keyProvider
+        var hints = [Languages.code(language)]
+        if let secondary = secondaryLanguage.map(Languages.code), !hints.contains(secondary) {
+            hints.append(secondary)
+        }
+        self.languageHints = hints
         self.terms = terms
         (events, continuation) = AsyncStream.makeStream(bufferingPolicy: .unbounded)
     }
@@ -89,8 +113,31 @@ final class SonioxEngine: LiveTranscriber, @unchecked Sendable {
     // MARK: - Connection
 
     private func connect() {
+        guard !isClosed, !isFinishing, !isConnecting, socket == nil else { return }
+        isConnecting = true
+        connectGeneration += 1
+        let generation = connectGeneration
+        let provider = keyProvider
+        Task {
+            do {
+                let key = try await provider()
+                self.queue.async {
+                    self.isConnecting = false
+                    guard generation == self.connectGeneration, !self.isClosed, !self.isFinishing else { return }
+                    self.openSocket(key: key)
+                }
+            } catch {
+                self.queue.async {
+                    self.isConnecting = false
+                    self.scheduleReconnect(reason: "تعذّر الحصول على مفتاح Soniox: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    private func openSocket(key: String) {
         var request = URLRequest(url: Self.endpoint)
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         let socket = session.webSocketTask(with: request)
         self.socket = socket
         isConnected = false
@@ -156,17 +203,17 @@ final class SonioxEngine: LiveTranscriber, @unchecked Sendable {
 
     private func enqueue(_ data: Data, startFrame: AVAudioFramePosition) {
         guard !isClosed, !isFinishing else { return }
+        if lastFinalFrame == nil { lastFinalFrame = startFrame }
+        let chunk = Chunk(frame: startFrame, data: data)
         if isConnected, let socket {
             if streamStartFrame == nil { streamStartFrame = startFrame }
             send(.data(data), on: socket)
+            remember(chunk)
         } else {
             if pendingBytes + data.count > Self.maxPendingBytes {
-                // Dropping the whole backlog keeps the new stream's clock contiguous;
-                // the audio itself is safe in the part files.
-                pending.removeAll()
-                pendingBytes = 0
+                dropPending()
             }
-            pending.append((startFrame, data))
+            pending.append(chunk)
             pendingBytes += data.count
         }
     }
@@ -174,9 +221,55 @@ final class SonioxEngine: LiveTranscriber, @unchecked Sendable {
     private func flushPending(on socket: URLSessionWebSocketTask) {
         guard let first = pending.first else { return }
         streamStartFrame = first.frame
-        for item in pending { send(.data(item.data), on: socket) }
+        for chunk in pending {
+            send(.data(chunk.data), on: socket)
+            remember(chunk)
+        }
         pending.removeAll()
         pendingBytes = 0
+    }
+
+    private func remember(_ chunk: Chunk) {
+        sent.append(chunk)
+        sentBytes += chunk.data.count
+        while sentBytes > Self.maxReplayBytes, let first = sent.first {
+            sent.removeFirst()
+            sentBytes -= first.data.count
+        }
+    }
+
+    /// The backlog outgrew 120 s: give it up as a gap; the audio itself is safe in the part files.
+    private func dropPending() {
+        guard let first = pending.first, let last = pending.last else { return }
+        emitGap(from: first.frame, to: last.endFrame)
+        pending.removeAll()
+        pendingBytes = 0
+    }
+
+    /// A dead connection never returns final text for audio after `lastFinalFrame`: queue it again.
+    private func requeueUnfinalized() {
+        let finalEnd = lastFinalFrame ?? 0
+        let replay = sent.filter { $0.endFrame > finalEnd }
+        if let first = replay.first, first.frame > finalEnd + AVAudioFramePosition(SegmentedRecorder.sampleRate) {
+            emitGap(from: finalEnd, to: first.frame) // older than the replay buffer reaches
+        }
+        sent.removeAll()
+        sentBytes = 0
+        pending.insert(contentsOf: replay, at: 0)
+        pendingBytes += replay.reduce(0) { $0 + $1.data.count }
+        while pendingBytes > Self.maxPendingBytes, let first = pending.first {
+            emitGap(from: first.frame, to: first.endFrame)
+            pending.removeFirst()
+            pendingBytes -= first.data.count
+        }
+    }
+
+    private func emitGap(from start: AVAudioFramePosition, to end: AVAudioFramePosition) {
+        guard end > start else { return }
+        continuation.yield(.gap(
+            start: Double(start) / SegmentedRecorder.sampleRate,
+            end: Double(end) / SegmentedRecorder.sampleRate
+        ))
     }
 
     private func send(_ message: URLSessionWebSocketTask.Message, on socket: URLSessionWebSocketTask) {
@@ -207,6 +300,7 @@ final class SonioxEngine: LiveTranscriber, @unchecked Sendable {
         let handshakeStatus = (socket.response as? HTTPURLResponse)?.statusCode
         socket.cancel(with: .goingAway, reason: nil)
         flushPhrase()
+        requeueUnfinalized()
         if isFinishing {
             close()
             return
@@ -217,6 +311,11 @@ final class SonioxEngine: LiveTranscriber, @unchecked Sendable {
             handleError(code: handshakeStatus, message: "رُفض الاتصال")
             return
         }
+        scheduleReconnect(reason: reason)
+    }
+
+    private func scheduleReconnect(reason: String) {
+        guard !isClosed, !isFinishing else { return }
         reconnectAttempt += 1
         let delay = min(30, pow(2, Double(min(reconnectAttempt, 5))))
         continuation.yield(.status("انقطع الاتصال بـ Soniox (\(reason)). إعادة المحاولة خلال \(Int(delay)) ث، والتسجيل مستمر."))
@@ -229,7 +328,11 @@ final class SonioxEngine: LiveTranscriber, @unchecked Sendable {
     private func close() {
         guard !isClosed else { return }
         isClosed = true
+        connectGeneration += 1
         flushPhrase()
+        // Whatever never reached Soniox has no text.
+        if let first = pending.first, let last = pending.last { emitGap(from: first.frame, to: last.endFrame) }
+        pending.removeAll()
         keepAliveTimer?.cancel()
         keepAliveTimer = nil
         socket?.cancel(with: .normalClosure, reason: nil)
@@ -251,7 +354,8 @@ final class SonioxEngine: LiveTranscriber, @unchecked Sendable {
         }
 
         var partial = ""
-        let offset = Double(streamStartFrame ?? 0) / SegmentedRecorder.sampleRate
+        let streamStart = streamStartFrame ?? 0
+        let offset = Double(streamStart) / SegmentedRecorder.sampleRate
         for token in object["tokens"] as? [[String: Any]] ?? [] {
             guard let piece = token["text"] as? String else { continue }
             if token["translation_status"] as? String == "translation" { continue }
@@ -266,6 +370,10 @@ final class SonioxEngine: LiveTranscriber, @unchecked Sendable {
             }
             let start = (token["start_ms"] as? Double).map { offset + $0 / 1000 }
             let end = (token["end_ms"] as? Double).map { offset + $0 / 1000 }
+            if let endMs = token["end_ms"] as? Double {
+                let frame = streamStart + AVAudioFramePosition(endMs * SegmentedRecorder.sampleRate / 1000)
+                lastFinalFrame = max(lastFinalFrame ?? 0, frame)
+            }
             let speaker = token["speaker"].map { "\($0)" }
             if let speaker, let current = phraseSpeaker, speaker != current {
                 flushPhrase()

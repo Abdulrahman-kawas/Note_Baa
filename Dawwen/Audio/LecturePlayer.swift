@@ -1,4 +1,5 @@
 import AVFoundation
+import MediaPlayer
 import Observation
 
 /// Plays all parts of a lecture as one timeline, so a transcript timestamp maps straight to a seek.
@@ -19,6 +20,8 @@ final class LecturePlayer {
     @ObservationIgnored private var player: AVPlayer?
     @ObservationIgnored private var timeObserver: Any?
     @ObservationIgnored private var endObserver: NSObjectProtocol?
+    @ObservationIgnored private var commandTargets: [(MPRemoteCommand, Any)] = []
+    @ObservationIgnored private var title = ""
 
     /// Joins the part files without re-encoding.
     static func makeComposition(urls: [URL]) async -> (AVMutableComposition, Double) {
@@ -42,8 +45,9 @@ final class LecturePlayer {
         return (composition, seconds.isFinite ? seconds : 0)
     }
 
-    func load(urls: [URL]) async {
+    func load(urls: [URL], title: String = "") async {
         teardown()
+        self.title = title
         let (composition, seconds) = await Self.makeComposition(urls: urls)
         let item = AVPlayerItem(asset: composition)
         item.audioTimePitchAlgorithm = .timeDomain
@@ -62,6 +66,7 @@ final class LecturePlayer {
             MainActor.assumeIsolated { self?.isPlaying = false }
         }
         isReady = seconds > 0
+        if isReady { configureRemoteCommands() }
     }
 
     func play() {
@@ -69,11 +74,13 @@ final class LecturePlayer {
         try? AudioSessionController.activateForPlayback()
         player.playImmediately(atRate: rate)
         isPlaying = true
+        updateNowPlaying()
     }
 
     func pause() {
         player?.pause()
         isPlaying = false
+        updateNowPlaying()
     }
 
     func togglePlayback() {
@@ -85,6 +92,7 @@ final class LecturePlayer {
         currentTime = target
         let tolerance = CMTime(value: 1, timescale: 10)
         player?.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: tolerance, toleranceAfter: tolerance)
+        updateNowPlaying()
     }
 
     func skip(by seconds: Double) {
@@ -100,5 +108,45 @@ final class LecturePlayer {
         player = nil
         isPlaying = false
         isReady = false
+        for (command, target) in commandTargets { command.removeTarget(target) }
+        commandTargets.removeAll()
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+    }
+
+    // MARK: - Lock screen and headphone controls
+
+    private func configureRemoteCommands() {
+        let center = MPRemoteCommandCenter.shared()
+        center.skipForwardCommand.preferredIntervals = [15]
+        center.skipBackwardCommand.preferredIntervals = [15]
+        // Handlers get only Sendable values (the seek position), then hop to the main actor.
+        func add(_ command: MPRemoteCommand, _ action: @escaping @MainActor @Sendable (Double?) -> Void) {
+            let target = command.addTarget { event in
+                let position = (event as? MPChangePlaybackPositionCommandEvent)?.positionTime
+                Task { @MainActor in action(position) }
+                return .success
+            }
+            commandTargets.append((command, target))
+        }
+        add(center.playCommand) { [weak self] _ in self?.play() }
+        add(center.pauseCommand) { [weak self] _ in self?.pause() }
+        add(center.togglePlayPauseCommand) { [weak self] _ in self?.togglePlayback() }
+        add(center.skipForwardCommand) { [weak self] _ in self?.skip(by: 15) }
+        add(center.skipBackwardCommand) { [weak self] _ in self?.skip(by: -15) }
+        add(center.changePlaybackPositionCommand) { [weak self] position in
+            if let position { self?.seek(to: position) }
+        }
+        updateNowPlaying()
+    }
+
+    private func updateNowPlaying() {
+        guard isReady else { return }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = [
+            MPMediaItemPropertyTitle: title.isEmpty ? "محاضرة" : title,
+            MPMediaItemPropertyArtist: "دوّن",
+            MPMediaItemPropertyPlaybackDuration: duration,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: currentTime,
+            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? Double(rate) : 0.0
+        ]
     }
 }

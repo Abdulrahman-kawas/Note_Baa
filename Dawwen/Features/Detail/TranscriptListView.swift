@@ -9,12 +9,13 @@ struct TranscriptListView: View {
     @State private var segments: [TranscriptSegment] = []
     @State private var query = ""
     @State private var follow = true
+    @State private var editing: TranscriptSegment?
 
     private var visible: [TranscriptSegment] {
         let text = query.trimmingCharacters(in: .whitespaces)
         guard !text.isEmpty else { return segments }
         return segments.filter {
-            $0.text.localizedStandardContains(text) || ($0.translation?.localizedStandardContains(text) ?? false)
+            $0.text.localizedStandardContains(text) || ($0.bestTranslation?.localizedStandardContains(text) ?? false)
         }
     }
 
@@ -38,7 +39,13 @@ struct TranscriptListView: View {
     private var bookmarkedIDs: Set<UUID> {
         var ids = Set<UUID>()
         for mark in lecture.bookmarks {
-            if let segment = segments.last(where: { $0.start <= mark }) { ids.insert(segment.uid) }
+            // Binary search, like activeID: segments are sorted by start.
+            var low = 0, high = segments.count - 1, found = -1
+            while low <= high {
+                let middle = (low + high) / 2
+                if segments[middle].start <= mark { found = middle; low = middle + 1 } else { high = middle - 1 }
+            }
+            if found >= 0 { ids.insert(segments[found].uid) }
         }
         return ids
     }
@@ -58,7 +65,8 @@ struct TranscriptListView: View {
                             segment: segment,
                             showTranslation: showTranslation,
                             isActive: segment.uid == active,
-                            isBookmarked: marked.contains(segment.uid)
+                            isBookmarked: marked.contains(segment.uid),
+                            onEdit: { editing = segment }
                         ) {
                             player.seek(to: segment.start)
                             player.play()
@@ -88,10 +96,18 @@ struct TranscriptListView: View {
                 .padding(.vertical, 4)
             }
         }
-        .task(id: lecture.segments.count) {
+        .task(id: TranscriptVersion(count: lecture.segments.count, refinedAt: lecture.translationRefinedAt)) {
             segments = lecture.sortedSegments
         }
+        .sheet(item: $editing) { segment in
+            SegmentEditSheet(segment: segment, lecture: lecture)
+        }
     }
+}
+
+private struct TranscriptVersion: Equatable {
+    let count: Int
+    let refinedAt: Date?
 }
 
 private struct TranscriptRow: View {
@@ -99,6 +115,7 @@ private struct TranscriptRow: View {
     let showTranslation: Bool
     let isActive: Bool
     let isBookmarked: Bool
+    let onEdit: () -> Void
     let onSeek: () -> Void
 
     var body: some View {
@@ -124,7 +141,7 @@ private struct TranscriptRow: View {
                     }
                     Text(segment.text)
                         .textDirection(rightToLeft: segment.text.isMostlyRTL)
-                    if showTranslation, let translation = segment.translation {
+                    if showTranslation, let translation = segment.bestTranslation {
                         Text(translation)
                             .foregroundStyle(.blue)
                             .textDirection(rightToLeft: translation.isMostlyRTL)
@@ -136,5 +153,87 @@ private struct TranscriptRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            Button("تعديل النص", systemImage: "pencil", action: onEdit)
+        }
+    }
+}
+
+/// Fixes a sentence, and a word that the recognizer gets wrong throughout the lecture.
+private struct SegmentEditSheet: View {
+    let segment: TranscriptSegment
+    let lecture: Lecture
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var text = ""
+    @State private var find = ""
+    @State private var replacement = ""
+    @State private var result: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("الجملة") {
+                    TextField("النص", text: $text, axis: .vertical)
+                        .lineLimit(1...8)
+                        .textDirection(rightToLeft: text.isMostlyRTL)
+                }
+                Section {
+                    TextField("الكلمة الخاطئة", text: $find)
+                    TextField("التصحيح", text: $replacement)
+                    Button("استبدل في كل المحاضرة") { replaceAll() }
+                        .disabled(find.trimmingCharacters(in: .whitespaces).isEmpty)
+                    Button("أضف التصحيح إلى المفردات") { addToVocabulary() }
+                        .disabled(replacement.trimmingCharacters(in: .whitespaces).isEmpty)
+                    if let result {
+                        Text(result)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("تصحيح متكرر")
+                } footer: {
+                    Text("المفردات تساعد محرك التفريغ على التعرّف على الكلمة في المحاضرات القادمة.")
+                }
+            }
+            .navigationTitle("تعديل")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("إلغاء") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("حفظ") {
+                        segment.text = text
+                        dismiss()
+                    }
+                    .disabled(text.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+        }
+        .onAppear { text = segment.text }
+    }
+
+    private func replaceAll() {
+        let count = lecture.sortedSegments.reduce(0) { total, item in
+            guard item.text.localizedCaseInsensitiveContains(find) else { return total }
+            item.text = item.text.replacingOccurrences(of: find, with: replacement, options: .caseInsensitive)
+            return total + 1
+        }
+        text = segment.text
+        result = "عُدّلت \(count) جملة"
+    }
+
+    private func addToVocabulary() {
+        let term = replacement.trimmingCharacters(in: .whitespaces)
+        let defaults = UserDefaults.standard
+        let current = defaults.string(forKey: SettingsKey.vocabulary) ?? ""
+        let existing = current.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
+        guard !existing.contains(term) else {
+            result = "الكلمة موجودة في المفردات"
+            return
+        }
+        defaults.set(current.isEmpty ? term : current + "\n" + term, forKey: SettingsKey.vocabulary)
+        result = "أُضيفت إلى المفردات"
     }
 }

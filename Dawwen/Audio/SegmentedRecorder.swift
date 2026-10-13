@@ -2,10 +2,12 @@ import AVFoundation
 import Accelerate
 import os
 
-/// Records the microphone into 5-minute AAC parts and hands every buffer to the live transcriber.
+/// Records the microphone into 5-minute parts and hands every buffer to the live transcriber.
 ///
-/// Each closed part is a complete, playable file, so a crash or a dead battery loses at most the
-/// part that was open. Audio leaves this class as 16 kHz mono Float32, the rate speech models use.
+/// The open part is 16-bit PCM in CAF (`AudioPartFile`): if the app is killed, the next launch
+/// repairs it, so a crash loses at most the last unflushed buffer instead of up to five minutes.
+/// Each closed part is announced through `partClosedHandler` and transcoded to AAC by the caller.
+/// Audio leaves this class as 16 kHz mono Float32, the rate speech models use.
 final class SegmentedRecorder: @unchecked Sendable {
     static let sampleRate: Double = 16_000
     static let pipelineFormat = AVAudioFormat(
@@ -24,41 +26,47 @@ final class SegmentedRecorder: @unchecked Sendable {
 
     /// Audio thread: every converted buffer, with its first frame in the recording timeline.
     var bufferHandler: (@Sendable (AVAudioPCMBuffer, AVAudioFramePosition) -> Void)?
-    /// A new part file was opened (audio thread, or the caller of `start()`).
-    var partHandler: (@Sendable (String) -> Void)?
+    /// A part file was opened (audio thread, or the caller of `start()`).
+    var partOpenedHandler: (@Sendable (String) -> Void)?
+    /// A part file was closed and is complete on disk (audio thread, or the caller of `stop()`).
+    var partClosedHandler: (@Sendable (String) -> Void)?
     /// A write or a restart failed.
     var failureHandler: (@Sendable (String) -> Void)?
 
     private let folder: URL
     private let framesPerPart: AVAudioFramePosition
-    private let engine = AVAudioEngine()
+    /// Replaced after a media-services reset; touched on the main thread only.
+    private var engine = AVAudioEngine()
     private let meterLock = OSAllocatedUnfairLock(initialState: Meter(seconds: 0, level: 0))
     // Guards everything below; the tap thread and stop() both touch the open file.
     private let lock = NSLock()
     private var converter: AVAudioConverter?
     private var file: AVAudioFile?
+    private var fileName: String?
     private var framesInPart: AVAudioFramePosition = 0
     private var totalFrames: AVAudioFramePosition = 0
-    private var partIndex = 0
+    private var partIndex: Int
     private var isPaused = false
+    private var isStopped = false
     private var configurationObserver: NSObjectProtocol?
 
-    init(folder: URL, partDuration: TimeInterval = 300) {
+    init(folder: URL, firstPartIndex: Int = 0, partDuration: TimeInterval = 300) {
         self.folder = folder
+        self.partIndex = firstPartIndex
         self.framesPerPart = AVAudioFramePosition(partDuration * Self.sampleRate)
     }
 
     var meter: Meter { meterLock.withLock { $0 } }
 
     func start() throws {
-        lock.withLock { isPaused = false }
-        try lock.withLock { try openNextPartLocked() }
-        try installTapAndStart()
-        configurationObserver = NotificationCenter.default.addObserver(
-            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
-        ) { [weak self] _ in
-            self?.handleConfigurationChange()
+        let opened = try lock.withLock { () throws -> String in
+            isPaused = false
+            isStopped = false
+            return try openPartLocked()
         }
+        partOpenedHandler?(opened)
+        try installTapAndStart()
+        observeConfigurationChanges()
     }
 
     func pause() {
@@ -66,24 +74,45 @@ final class SegmentedRecorder: @unchecked Sendable {
         engine.pause()
     }
 
+    /// Also used by the stall watchdog: rebuilding the tap is safe while running.
     func resume() throws {
         lock.withLock { isPaused = false }
         // The input format may have changed while paused (a mic plugged in), so rebuild the tap.
         try installTapAndStart()
     }
 
-    func stop() {
+    /// After `AVAudioSession.mediaServicesWereResetNotification` every audio object is dead:
+    /// build a new engine. The open part file and the frame clock carry on.
+    func rebuildAfterMediaServicesReset(startRunning: Bool) throws {
+        if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
+        configurationObserver = nil
+        engine = AVAudioEngine()
+        observeConfigurationChanges()
+        if startRunning { try resume() }
+    }
+
+    /// Closes the open part and returns its name, so the caller can transcode it.
+    @discardableResult
+    func stop() -> String? {
         if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
         configurationObserver = nil
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        lock.withLock {
-            file?.close()
-            file = nil
+        return lock.withLock {
+            isStopped = true
+            return closePartLocked()
         }
     }
 
     // MARK: - Engine
+
+    private func observeConfigurationChanges() {
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
+        ) { [weak self] _ in
+            self?.handleConfigurationChange()
+        }
+    }
 
     private func installTapAndStart() throws {
         let input = engine.inputNode
@@ -117,12 +146,18 @@ final class SegmentedRecorder: @unchecked Sendable {
 
     private func process(_ buffer: AVAudioPCMBuffer) {
         lock.lock()
-        guard let converted = convert(buffer), converted.frameLength > 0 else {
+        guard !isStopped, let converted = convert(buffer), converted.frameLength > 0 else {
             lock.unlock()
             return
         }
         let startFrame = totalFrames
         var failure: Error?
+        var closed: String?
+        var opened: String?
+        if file == nil {
+            // The last part could not be opened (disk full?): keep trying, the audio matters most.
+            do { opened = try openPartLocked() } catch { failure = error }
+        }
         do {
             try file?.write(from: converted)
         } catch {
@@ -132,7 +167,8 @@ final class SegmentedRecorder: @unchecked Sendable {
         totalFrames += frames
         framesInPart += frames
         if framesInPart >= framesPerPart {
-            do { try openNextPartLocked() } catch { failure = error }
+            closed = closePartLocked()
+            do { opened = try openPartLocked() } catch { failure = error }
         }
         let total = totalFrames
         lock.unlock()
@@ -140,8 +176,21 @@ final class SegmentedRecorder: @unchecked Sendable {
         let level = Self.level(of: converted)
         meterLock.withLock { $0 = Meter(seconds: Double(total) / Self.sampleRate, level: level) }
         bufferHandler?(converted, startFrame)
-        if let failure {
+        if let closed { partClosedHandler?(closed) }
+        if let opened { partOpenedHandler?(opened) }
+        if let failure, shouldReport() {
             failureHandler?("خطأ في حفظ الصوت: \(failure.localizedDescription)")
+        }
+    }
+
+    private let reportLock = OSAllocatedUnfairLock(initialState: Date.distantPast)
+
+    /// At most one failure banner every 10 seconds.
+    private func shouldReport() -> Bool {
+        reportLock.withLock { last in
+            guard Date().timeIntervalSince(last) > 10 else { return false }
+            last = Date()
+            return true
         }
     }
 
@@ -164,28 +213,28 @@ final class SegmentedRecorder: @unchecked Sendable {
         return status == .error ? nil : output
     }
 
-    // MARK: - Part files
+    // MARK: - Part files (call with `lock` held)
 
-    /// Call with `lock` held.
-    private func openNextPartLocked() throws {
-        file?.close()
-        file = nil
-        let name = String(format: "part-%03d.m4a", partIndex)
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: Self.sampleRate,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: 32_000
-        ]
+    private func openPartLocked() throws -> String {
+        let name = AudioPartFile.name(index: partIndex, ext: AudioPartFile.openExtension)
         file = try AVAudioFile(
             forWriting: folder.appending(path: name),
-            settings: settings,
+            settings: AudioPartFile.recordingSettings,
             commonFormat: .pcmFormatFloat32,
             interleaved: false
         )
+        fileName = name
         partIndex += 1
         framesInPart = 0
-        partHandler?(name)
+        return name
+    }
+
+    private func closePartLocked() -> String? {
+        let name = fileName
+        file?.close()
+        file = nil
+        fileName = nil
+        return name
     }
 
     /// 0…1 loudness for the level meter: RMS on a 60 dB scale.

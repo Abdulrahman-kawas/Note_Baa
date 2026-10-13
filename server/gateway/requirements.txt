@@ -1,0 +1,6 @@
+fastapi==0.141.1
+uvicorn==0.54.0
+anthropic==1.8.0
+boto3==1.43.103
+httpx==0.28.1
+pydantic==2.13.5

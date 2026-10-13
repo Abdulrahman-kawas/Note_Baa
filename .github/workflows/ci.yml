@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  gateway:
+    name: Gateway tests (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -r requirements-dev.txt
+        working-directory: server/gateway
+      - name: Test
+        run: python -m pytest -q tests
+        working-directory: server/gateway
+
+  app:
+    name: Build the iPad app (no signing)
+    # Needs a runner image that ships Xcode 26.4 or newer; check the label when this first runs.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: >
+          xcodebuild -project Dawwen.xcodeproj -scheme Dawwen
+          -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build

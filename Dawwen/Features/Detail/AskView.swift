@@ -20,19 +20,21 @@ final class AskSession {
 
     func ask(_ question: String, about lecture: Lecture) {
         var entry = Entry(question: question)
-        guard let key = KeychainStore.read(.anthropic) else {
+        let settings = AppSettings.current
+        // Haiku by default: a question re-reads the cached transcript for a fraction of a cent.
+        guard let client = ClaudeClient.current(model: settings.askModel) else {
             entry.error = ClaudeClient.ClaudeError.missingKey.localizedDescription
             entry.isStreaming = false
             entries.append(entry)
             return
         }
-        let settings = AppSettings.current
-        let client = ClaudeClient(apiKey: key, model: settings.claudeModel)
-        // Same preamble, transcript and effort as the summary request, so the cached prefix is reused.
+        // Same preamble and transcript as the summary request, so the cached system prefix is reused
+        // (the cache is per model: summary and questions share it only when they use the same model).
         let request = ClaudeClient.Request(
             preamble: LecturePrompt.preamble(for: lecture),
             context: LecturePrompt.transcript(for: lecture),
             userMessage: LecturePrompt.questionRequest(question, outputLanguage: settings.summaryLanguage),
+            effort: "medium",
             maxTokens: 16_000
         )
         entries.append(entry)
@@ -46,12 +48,25 @@ final class AskSession {
                 update(id) { $0.error = error.localizedDescription }
             }
             update(id) { $0.isStreaming = false }
+            save(id, about: lecture)
         }
     }
 
     private func update(_ id: UUID, _ change: (inout Entry) -> Void) {
         guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
         change(&entries[index])
+    }
+
+    /// Keeps a finished answer with the lecture so it is still there next time. Failed questions stay
+    /// in the session so the error remains visible.
+    private func save(_ id: UUID, about lecture: Lecture) {
+        guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
+        let entry = entries[index]
+        guard entry.error == nil, !entry.answer.isEmpty else { return }
+        let saved = QAEntry(question: entry.question, answer: entry.answer)
+        lecture.modelContext?.insert(saved)
+        saved.lecture = lecture
+        entries.remove(at: index)
     }
 }
 
@@ -71,7 +86,10 @@ struct AskView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 20) {
-                        if session.entries.isEmpty {
+                        ForEach(lecture.questions.sorted { $0.createdAt < $1.createdAt }) { saved in
+                            SavedQuestionView(entry: saved)
+                        }
+                        if session.entries.isEmpty && lecture.questions.isEmpty {
                             Text("اسأل عن أي شيء قيل في المحاضرة؛ الإجابة تذكر الطوابع الزمنية.")
                                 .foregroundStyle(.secondary)
                             ForEach(examples, id: \.self) { example in
@@ -129,5 +147,21 @@ struct AskView: View {
         guard !trimmed.isEmpty, !session.isBusy else { return }
         session.ask(trimmed, about: lecture)
         question = ""
+    }
+}
+
+/// A question answered earlier, shown from the lecture's saved history.
+private struct SavedQuestionView: View {
+    let entry: QAEntry
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(entry.question)
+                .bold()
+                .padding(10)
+                .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+                .textDirection(rightToLeft: entry.question.isMostlyRTL)
+            MarkdownView(text: entry.answer)
+        }
     }
 }

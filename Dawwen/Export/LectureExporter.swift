@@ -44,7 +44,7 @@ enum LectureExporter {
         var lines = [lecture.title, lecture.createdAt.formatted(date: .long, time: .shortened), ""]
         for segment in lecture.sortedSegments {
             lines.append("\(TimeFormat.stamp(segment.start)) \(segment.text)")
-            if let translation = segment.translation { lines.append("    \(translation)") }
+            if let translation = segment.bestTranslation { lines.append("    \(translation)") }
         }
         return lines.joined(separator: "\n")
     }
@@ -64,7 +64,7 @@ enum LectureExporter {
         parts += ["## النص الكامل", ""]
         for segment in lecture.sortedSegments {
             var line = "**\(TimeFormat.stamp(segment.start))** \(segment.text)"
-            if let translation = segment.translation { line += "\n> \(translation)" }
+            if let translation = segment.bestTranslation { line += "\n> \(translation)" }
             parts += [line, ""]
         }
         return parts.joined(separator: "\n")
@@ -73,7 +73,7 @@ enum LectureExporter {
     static func srt(for lecture: Lecture, translated: Bool) -> String {
         var cues: [String] = []
         for (index, segment) in lecture.sortedSegments.enumerated() {
-            let body = translated ? (segment.translation ?? segment.text) : segment.text
+            let body = translated ? (segment.bestTranslation ?? segment.text) : segment.text
             let end = max(segment.end, segment.start + 1)
             cues.append("\(index + 1)\n\(TimeFormat.srt(segment.start)) --> \(TimeFormat.srt(end))\n\(body)\n")
         }
@@ -81,14 +81,26 @@ enum LectureExporter {
     }
 
     private static func audio(for lecture: Lecture, name: String) async throws -> URL {
-        let (composition, _) = await LecturePlayer.makeComposition(urls: LectureStore.audioURLs(for: lecture))
+        let urls = LectureStore.audioURLs(for: lecture)
+        let (composition, _) = await LecturePlayer.makeComposition(urls: urls)
         let url = FileManager.default.temporaryDirectory.appending(path: name + ".m4a")
         try? FileManager.default.removeItem(at: url)
-        guard let session = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetAppleM4A) else {
+        // All-AAC parts join without re-encoding (seconds instead of minutes for 4 hours).
+        let preset = urls.allSatisfy { $0.pathExtension == "m4a" } ? AVAssetExportPresetPassthrough : AVAssetExportPresetAppleM4A
+        guard let session = AVAssetExportSession(asset: composition, presetName: preset) else {
             throw CocoaError(.fileWriteUnknown)
         }
         try await session.export(to: url, as: .m4a)
         return url
+    }
+
+    /// Exports pile up in tmp; clear the old ones at launch (call from DawwenApp.init).
+    static func cleanTemporaryExports() {
+        let folder = FileManager.default.temporaryDirectory
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+        for name in names where ["txt", "md", "srt", "m4a"].contains((name as NSString).pathExtension) {
+            try? FileManager.default.removeItem(at: folder.appending(path: name))
+        }
     }
 
     private static func write(_ content: String, name: String, ext: String) throws -> URL {

@@ -3,6 +3,12 @@ import SwiftData
 import SwiftUI
 
 /// Generates the study notes. Lives in the detail view, so switching tabs doesn't stop it.
+///
+/// Three routes, cheapest first:
+///  - on device (free): Apple Intelligence summarizes the English transcript in parts, then Apple
+///    Translation turns the notes into Arabic; the English original is kept.
+///  - Claude now: streams; a background assertion lets it finish if the student leaves the app.
+///  - Claude later (gateway): one Message Batch at half price; collected when the lecture is opened.
 @MainActor
 @Observable
 final class SummaryJob {
@@ -14,7 +20,8 @@ final class SummaryJob {
 
     func summarizeWithClaude(_ lecture: Lecture, context: ModelContext) {
         guard !isWorking else { return }
-        guard let key = KeychainStore.read(.anthropic) else {
+        let settings = AppSettings.current
+        guard let client = ClaudeClient.current(model: settings.claudeModel) else {
             errorMessage = ClaudeClient.ClaudeError.missingKey.localizedDescription
             return
         }
@@ -22,15 +29,9 @@ final class SummaryJob {
             errorMessage = "لا يوجد نص لتلخيصه بعد."
             return
         }
-        let settings = AppSettings.current
-        let client = ClaudeClient(apiKey: key, model: settings.claudeModel)
-        let request = ClaudeClient.Request(
-            preamble: LecturePrompt.preamble(for: lecture),
-            context: LecturePrompt.transcript(for: lecture),
-            userMessage: LecturePrompt.summaryRequest(for: lecture, outputLanguage: settings.summaryLanguage)
-        )
+        let request = Self.summaryRequest(for: lecture, outputLanguage: settings.summaryLanguage)
         let modelName = settings.claudeModel.title
-        run {
+        run(name: "dawwen.summary") {
             self.progress = "\(modelName) يقرأ المحاضرة كاملة…"
             var text = ""
             var lastRedraw = Date.distantPast
@@ -47,12 +48,15 @@ final class SummaryJob {
             // A cancelled stream ends quietly; never save a partial summary.
             try Task.checkCancellation()
             lecture.summary = text
+            lecture.summaryOriginal = nil
             lecture.summaryModel = modelName
             lecture.summaryDate = .now
             try? context.save()
+            try? LectureArchive.write(lecture)
         }
     }
 
+    /// Free and offline for English lectures: summary in English, then translated on device.
     func summarizeOnDevice(_ lecture: Lecture, context: ModelContext) {
         guard !isWorking else { return }
         if let reason = OnDeviceSummarizer.unavailableReason(lectureLanguage: lecture.sourceLanguage) {
@@ -65,15 +69,78 @@ final class SummaryJob {
             return
         }
         let language = lecture.sourceLanguage
-        run {
-            let text = try await OnDeviceSummarizer.summarize(paragraphs: paragraphs, language: language) { message in
+        let outputLanguage = AppSettings.current.summaryLanguage
+        run(name: "dawwen.summary.device") {
+            // The on-device model writes the lecture's language (Apple Intelligence has no Arabic).
+            let original = try await OnDeviceSummarizer.summarize(paragraphs: paragraphs, language: language) { message in
                 self.progress = message
             }
             try Task.checkCancellation()
-            lecture.summary = text
+            var final = original
+            if Languages.code(outputLanguage) != Languages.code(language) {
+                self.progress = "ترجمة الملخص إلى \(Languages.name(for: outputLanguage))…"
+                if let session = await TranslationSupport.installedSession(source: language, target: outputLanguage, purpose: .document) {
+                    final = try await TranslationSupport.translateMarkdown(original, with: session)
+                } else {
+                    self.errorMessage = "لغة الترجمة غير منزّلة؛ حُفظ الملخص بلغة المحاضرة. نزّلها من الإعدادات."
+                }
+            }
+            lecture.summary = final
+            lecture.summaryOriginal = final == original ? nil : original
             lecture.summaryModel = "Apple Intelligence (على الجهاز)"
             lecture.summaryDate = .now
             try? context.save()
+            try? LectureArchive.write(lecture)
+        }
+    }
+
+    /// Message Batches through the gateway: half price, ready within about an hour.
+    func summarizeLater(_ lecture: Lecture, context: ModelContext) {
+        guard !isWorking, let server = ServerClient.current else { return }
+        let settings = AppSettings.current
+        let request = Self.summaryRequest(for: lecture, outputLanguage: settings.summaryLanguage)
+        let call = ServerClient.ClaudeCall(
+            model: settings.claudeModel.rawValue, preamble: request.preamble, context: request.context,
+            userMessage: request.userMessage, effort: request.effort, maxTokens: 32_000, outputSchema: nil
+        )
+        run(name: "dawwen.summary.batch") {
+            self.progress = "إرسال الطلب إلى الخادم…"
+            let job = try await server.createJob(ServerClient.JobRequest(
+                type: "summary", lectureID: lecture.id, engine: "claude-batch", claude: call
+            ))
+            lecture.summaryJobID = job.id
+            try? context.save()
+            self.errorMessage = "أُرسل الطلب بنصف السعر. يصل الملخص خلال ساعة تقريباً؛ افتح المحاضرة لاحقاً."
+        }
+    }
+
+    /// Called when the lecture opens.
+    func collectPending(_ lecture: Lecture, context: ModelContext) async {
+        guard let id = lecture.summaryJobID, let server = ServerClient.current else { return }
+        do {
+            let job = try await server.job(id)
+            switch job.status {
+            case "done":
+                let data = try await server.result(of: job)
+                let result = try JSONDecoder().decode(ServerClient.JobResult.self, from: data)
+                if let text = result.results?["summary"]?.text, !text.isEmpty {
+                    lecture.summary = text
+                    lecture.summaryOriginal = nil
+                    lecture.summaryModel = "\(AppSettings.current.claudeModel.title) (Batch)"
+                    lecture.summaryDate = .now
+                }
+                lecture.summaryJobID = nil
+                try? context.save()
+                try? LectureArchive.write(lecture)
+            case "failed":
+                lecture.summaryJobID = nil
+                try? context.save()
+                errorMessage = "تعذّر الملخص المؤجل: \(job.error ?? "")"
+            default:
+                break
+            }
+        } catch {
+            // Offline: try again next time.
         }
     }
 
@@ -81,16 +148,26 @@ final class SummaryJob {
         task?.cancel()
     }
 
-    private func run(_ work: @escaping @MainActor () async throws -> Void) {
+    private static func summaryRequest(for lecture: Lecture, outputLanguage: String) -> ClaudeClient.Request {
+        ClaudeClient.Request(
+            preamble: LecturePrompt.preamble(for: lecture),
+            context: LecturePrompt.transcript(for: lecture),
+            userMessage: LecturePrompt.summaryRequest(for: lecture, outputLanguage: outputLanguage)
+        )
+    }
+
+    private func run(name: String, _ work: @escaping @MainActor () async throws -> Void) {
         isWorking = true
         draft = ""
         errorMessage = nil
         task = Task {
+            let assertion = BackgroundAssertion(name: name)
             do {
                 try await work()
             } catch {
                 if !Task.isCancelled { errorMessage = error.localizedDescription }
             }
+            assertion.end()
             isWorking = false
             progress = nil
         }
@@ -102,9 +179,11 @@ struct SummaryView: View {
     let job: SummaryJob
 
     @Environment(\.modelContext) private var context
-    @AppStorage(SettingsKey.claudeModel) private var modelRaw = ClaudeModelOption.opus.rawValue
+    @AppStorage(SettingsKey.claudeModel) private var modelRaw = ClaudeModelOption.sonnet.rawValue
+    @State private var showOriginal = false
 
-    private var model: ClaudeModelOption { ClaudeModelOption(rawValue: modelRaw) ?? .opus }
+    private var model: ClaudeModelOption { ClaudeModelOption(rawValue: modelRaw) ?? .sonnet }
+    private var hasServer: Bool { ServerClient.current != nil }
 
     var body: some View {
         ScrollView {
@@ -121,7 +200,16 @@ struct SummaryView: View {
                         MarkdownView(text: job.draft)
                     }
                 } else if let summary = lecture.summary {
-                    MarkdownView(text: summary)
+                    if lecture.summaryOriginal != nil {
+                        Picker("اللغة", selection: $showOriginal) {
+                            Text("المترجَم").tag(false)
+                            Text("الأصل").tag(true)
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(maxWidth: 260)
+                    }
+                    let shown = showOriginal ? (lecture.summaryOriginal ?? summary) : summary
+                    MarkdownView(text: shown)
                     Divider()
                     HStack {
                         if let name = lecture.summaryModel, let date = lecture.summaryDate {
@@ -131,22 +219,28 @@ struct SummaryView: View {
                         }
                         Spacer()
                         Button {
-                            UIPasteboard.general.string = summary
+                            UIPasteboard.general.string = shown
                         } label: {
                             Label("نسخ", systemImage: "doc.on.doc")
                         }
                         actionsMenu(title: "إعادة التلخيص")
                     }
+                } else if lecture.summaryJobID != nil {
+                    Label("ملخص مؤجل (Batch) قيد التحضير على الخادم.", systemImage: "clock")
+                        .foregroundStyle(.secondary)
                 } else {
                     emptyState
                 }
                 if let error = job.errorMessage {
                     Label(error, systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.red)
+                        .foregroundStyle(.orange)
                         .font(.footnote)
                 }
             }
             .padding()
+        }
+        .task(id: lecture.id) {
+            await job.collectPending(lecture, context: context)
         }
     }
 
@@ -157,33 +251,46 @@ struct SummaryView: View {
             Text("محاور المحاضرة بطوابعها الزمنية، والمصطلحات، والأمثلة، وما علّمته من نقاط، ومواعيد الواجبات، وأسئلة مراجعة.")
                 .foregroundStyle(.secondary)
             Button {
+                job.summarizeOnDevice(lecture, context: context)
+            } label: {
+                Label("لخّص على الجهاز مجاناً (Apple Intelligence + الترجمة)", systemImage: "ipad")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            Text("دون إنترنت ودون تكلفة للمحاضرات الإنجليزية. ملخص أقصر من Claude.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button {
                 job.summarizeWithClaude(lecture, context: context)
             } label: {
                 Label("لخّص بـ \(model.title)", systemImage: "sparkles")
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            Text("يرسل نص المحاضرة (دون الصوت) إلى Anthropic. السعر: \(model.priceNote).")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Button {
-                job.summarizeOnDevice(lecture, context: context)
-            } label: {
-                Label("لخّص على الجهاز (Apple Intelligence)", systemImage: "iphone")
-                    .frame(maxWidth: .infinity)
-            }
             .buttonStyle(.bordered)
-            Text("مجاني ودون إنترنت، للغات التي يدعمها Apple Intelligence فقط (ليست العربية).")
+            .controlSize(.large)
+            Text("ملاحظات دراسة مفصّلة بالعربية مباشرة. يرسل النص (دون الصوت). السعر: \(model.priceNote).")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if hasServer {
+                Button {
+                    job.summarizeLater(lecture, context: context)
+                } label: {
+                    Label("لخّص لاحقاً بنصف السعر (Batch عبر الخادم)", systemImage: "clock.arrow.circlepath")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            }
         }
     }
 
     private func actionsMenu(title: String) -> some View {
         Menu {
+            Button("على الجهاز (مجاني)") { job.summarizeOnDevice(lecture, context: context) }
             Button("بـ \(model.title)") { job.summarizeWithClaude(lecture, context: context) }
-            Button("على الجهاز (Apple Intelligence)") { job.summarizeOnDevice(lecture, context: context) }
+            if hasServer {
+                Button("بـ \(model.title) لاحقاً (Batch)") { job.summarizeLater(lecture, context: context) }
+            }
         } label: {
             Label(title, systemImage: "arrow.clockwise")
         }

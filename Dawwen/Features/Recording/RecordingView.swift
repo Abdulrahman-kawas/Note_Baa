@@ -11,6 +11,8 @@ struct RecordingView: View {
     @State private var controller = RecordingController()
     @State private var confirmStop = false
     @State private var followLive = true
+    @State private var lectureMode = false
+    @State private var showSlideCapture = false
 
     var body: some View {
         NavigationStack {
@@ -31,9 +33,24 @@ struct RecordingView: View {
             }
             .navigationTitle(request.title)
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        lectureMode = true
+                    } label: {
+                        Label("وضع المحاضرة", systemImage: "moon.fill")
+                    }
+                }
+            }
             .overlay {
                 if controller.phase == .finished { finishedCard }
                 if case .failed(let message) = controller.phase { failedCard(message) }
+            }
+            .overlay {
+                if lectureMode { lectureModeCover }
+            }
+            .sheet(isPresented: $showSlideCapture) {
+                SlideCaptureView { controller.addSlideText($0) }
             }
         }
         .translationTask(controller.translationConfiguration) { session in
@@ -43,7 +60,7 @@ struct RecordingView: View {
             await controller.start(request, context: context)
         }
         .interactiveDismissDisabled(controller.isActive)
-        .onDisappear { controller.abandon() }
+        .onDisappear { controller.dismantle() }
         .confirmationDialog("إنهاء التسجيل؟", isPresented: $confirmStop, titleVisibility: .visible) {
             Button("إنهاء وحفظ", role: .destructive) {
                 Task { await controller.stop() }
@@ -55,6 +72,24 @@ struct RecordingView: View {
     }
 
     // MARK: - Parts
+
+    /// Darkens the screen during the lecture so it is easier on the eyes. Recording goes on underneath;
+    /// a tap brings the screen back.
+    private var lectureModeCover: some View {
+        Color.black.opacity(0.94)
+            .ignoresSafeArea()
+            .overlay {
+                VStack(spacing: 12) {
+                    Image(systemName: "moon.fill")
+                    Text("وضع المحاضرة: التسجيل مستمر")
+                    Text("اضغط في أي مكان للعودة")
+                        .font(.footnote)
+                }
+                .foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { lectureMode = false }
+    }
 
     private var header: some View {
         VStack(spacing: 10) {
@@ -73,6 +108,14 @@ struct RecordingView: View {
                 if controller.translationQueue.pendingCount > 0 {
                     Text("·")
                     Text("بانتظار الترجمة: \(controller.translationQueue.pendingCount)")
+                }
+                if controller.translationQueue.failedCount > 0 {
+                    Text("·")
+                    Text("تعذّرت ترجمة \(controller.translationQueue.failedCount)").foregroundStyle(.orange)
+                }
+                if controller.gapSeconds >= 5 {
+                    Text("·")
+                    Text("دون نص: \(TimeFormat.clock(controller.gapSeconds))").foregroundStyle(.orange)
                 }
             }
             .font(.footnote)
@@ -133,6 +176,14 @@ struct RecordingView: View {
             .disabled(controller.phase != .recording)
 
             Button {
+                showSlideCapture = true
+            } label: {
+                Label("شريحة", systemImage: "camera.viewfinder")
+                    .labelStyle(.verticalIcon)
+            }
+            .disabled(controller.phase != .recording)
+
+            Button {
                 if case .paused = controller.phase { controller.resume() } else { controller.pause() }
             } label: {
                 Image(systemName: isPaused ? "play.circle.fill" : "pause.circle.fill")
@@ -164,7 +215,12 @@ struct RecordingView: View {
             Text("\(TimeFormat.duration(controller.elapsed)) · \(controller.liveSegments.count) جملة")
                 .foregroundStyle(.secondary)
             if controller.translationQueue.pendingCount > 0 {
-                Label("تُستكمل ترجمة \(controller.translationQueue.pendingCount) جملة…", systemImage: "character.bubble")
+                Label("تُترجم \(controller.translationQueue.pendingCount) جملة الآن؛ ما يتبقى يُترجم تلقائياً عند فتح المحاضرة.", systemImage: "character.bubble")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            if controller.gapSeconds >= 5 {
+                Label("\(TimeFormat.duration(controller.gapSeconds)) دون نص لحظي؛ أكملها من صفحة المحاضرة.", systemImage: "text.badge.plus")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

@@ -1,0 +1,65 @@
+# Home server (optional). Nothing here listens on the internet: every container only makes
+# outbound HTTPS calls (to the AWS gateway and S3). Start what you need:
+#   docker compose -f docker-compose.home.yml --profile backup up -d          # third copy of the backup
+#   docker compose -f docker-compose.home.yml --profile gpu up -d             # + Ollama + worker (NVIDIA GPU)
+name: dawwen-home
+
+services:
+  backup-sync:
+    profiles: [backup, gpu]
+    image: rclone/rclone:1.75.0
+    restart: unless-stopped
+    environment:
+      RCLONE_CONFIG_S3_TYPE: s3
+      RCLONE_CONFIG_S3_PROVIDER: AWS
+      RCLONE_CONFIG_S3_ACCESS_KEY_ID: ${BACKUP_READONLY_KEY_ID:?set in .env}
+      RCLONE_CONFIG_S3_SECRET_ACCESS_KEY: ${BACKUP_READONLY_SECRET:?set in .env}
+      RCLONE_CONFIG_S3_REGION: ${AWS_REGION:-eu-central-1}
+      BUCKET: ${BACKUP_BUCKET:?set in .env}
+    volumes:
+      - ${BACKUP_DIR:-./backup}:/data
+    # `copy`, not `sync`: a deletion in S3 never deletes the home copy.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - while true; do rclone copy "s3:$$BUCKET/devices" /data/devices --s3-no-check-bucket --transfers 4 --log-level NOTICE; sleep 21600; done
+
+  ollama:
+    profiles: [gpu]
+    image: ollama/ollama:0.34.4
+    restart: unless-stopped
+    volumes:
+      - ollama:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  worker:
+    profiles: [gpu]
+    build: ./worker
+    restart: unless-stopped
+    depends_on: [ollama]
+    environment:
+      GATEWAY_URL: ${GATEWAY_URL:?set in .env}
+      WORKER_TOKEN: ${WORKER_TOKEN:?set in .env}
+      JOB_TYPES: ${JOB_TYPES:-refine_translation}
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:14b}
+      WHISPER_MODEL: ${WHISPER_MODEL:-large-v3-turbo}
+      WHISPER_DEVICE: cuda
+    volumes:
+      - models:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  ollama: {}
+  models: {}
