@@ -1,0 +1,171 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Dawwen gateway - Soniox temporary keys, capped Claude proxy, Batch jobs, S3 backup.
+
+Parameters:
+  DailyClaudeUsdCap:
+    Type: Number
+    Default: 1
+  MonthlyClaudeUsdCap:
+    Type: Number
+    Default: 15
+  MonthlyBudgetUsd:
+    Type: Number
+    Default: 5
+  AlertEmail:
+    Type: String
+    Description: Where AWS Budgets sends cost alerts.
+
+Resources:
+  BackupBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      LifecycleConfiguration:
+        Rules:
+          - Id: old-versions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+          - Id: audio-to-glacier-ir
+            Status: Enabled
+            Prefix: devices/
+            Transitions:
+              - StorageClass: GLACIER_IR
+                TransitionInDays: 180
+          - Id: job-files
+            Status: Enabled
+            Prefix: jobs/
+            ExpirationInDays: 30
+
+  StateTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: gsi1pk
+          AttributeType: S
+        - AttributeName: gsi1sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: gsi1
+          KeySchema:
+            - AttributeName: gsi1pk
+              KeyType: HASH
+            - AttributeName: gsi1sk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  GatewayFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      Architectures: [arm64]
+      MemorySize: 512
+      Timeout: 900
+      ReservedConcurrentExecutions: 3
+      FunctionUrlConfig:
+        AuthType: NONE
+        InvokeMode: RESPONSE_STREAM
+      Environment:
+        Variables:
+          STORE_BACKEND: dynamodb
+          TABLE_NAME: !Ref StateTable
+          BUCKET: !Ref BackupBucket
+          SECRETS_SOURCE: ssm
+          SSM_PREFIX: /dawwen
+          DAILY_CLAUDE_USD_CAP: !Ref DailyClaudeUsdCap
+          MONTHLY_CLAUDE_USD_CAP: !Ref MonthlyClaudeUsdCap
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref StateTable
+        - S3CrudPolicy:
+            BucketName: !Ref BackupBucket
+        - Statement:
+            - Effect: Allow
+              Action: ssm:GetParameters
+              Resource: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dawwen/*
+    Metadata:
+      Dockerfile: Dockerfile
+      DockerContext: ./gateway
+      DockerTag: v1
+
+  # Since Oct 2025 a public function URL needs lambda:InvokeFunction too (SAM adds InvokeFunctionUrl).
+  GatewayInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref GatewayFunction
+      Action: lambda:InvokeFunction
+      Principal: "*"
+      InvokedViaFunctionUrl: true
+
+  GatewayLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${GatewayFunction}
+      RetentionInDays: 7
+
+  MonthlyBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: dawwen-monthly
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: !Ref MonthlyBudgetUsd
+          Unit: USD
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 80
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AlertEmail
+        - Notification:
+            NotificationType: FORECASTED
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AlertEmail
+
+Outputs:
+  GatewayUrl:
+    Description: Paste into Dawwen > Settings > Server
+    Value: !GetAtt GatewayFunctionUrl.FunctionUrl
+  BackupBucketName:
+    Value: !Ref BackupBucket
+  StateTableName:
+    Value: !Ref StateTable
