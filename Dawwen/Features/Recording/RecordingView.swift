@@ -13,13 +13,21 @@ struct RecordingView: View {
     @State private var followLive = true
     @State private var lectureMode = false
     @State private var showSlideCapture = false
-    @State private var showAsk = false
     @State private var askSession = AskSession()
+    @State private var askLayout = AskLayout.hidden
+    /// What Ask AI and the minimized button open: the last of split or floating that was used.
+    @State private var askOpenLayout = AskLayout.split
+    /// The transcript's share of the screen while the panel is docked.
+    @State private var askSplit: CGFloat = 0.5
+    /// Where the floating window and the minimized button were left; placed by default until moved.
+    @State private var askWindowFrame: CGRect?
+    @State private var askBubbleCenter: CGPoint?
+    @State private var askHasNews = false
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                header
+                if isAskDocked { compactBar } else { header }
                 if let banner = controller.banner {
                     Text(banner)
                         .font(.footnote)
@@ -29,9 +37,28 @@ struct RecordingView: View {
                         .background(.yellow.opacity(0.18))
                 }
                 Divider()
-                transcript
-                Divider()
-                controls
+                // The controls move up into the compact bar while docked, so the question field sits
+                // right above the keyboard.
+                SplitPanes(sideBySide: sizeClass == .regular, showsSecond: isAskDocked, fraction: $askSplit) {
+                    transcript
+                } second: {
+                    if let lecture = controller.lecture {
+                        VStack(spacing: 0) {
+                            askHeader
+                            Divider()
+                            AskView(lecture: lecture, session: askSession, recording: controller)
+                        }
+                    }
+                }
+                if !isAskDocked {
+                    Divider()
+                    controls
+                }
+            }
+            .overlay {
+                GeometryReader { proxy in
+                    floatingAsk(in: proxy.size)
+                }
             }
             .navigationTitle(request.title)
             .navigationBarTitleDisplayMode(.inline)
@@ -54,22 +81,12 @@ struct RecordingView: View {
             .sheet(isPresented: $showSlideCapture) {
                 SlideCaptureView { controller.addSlideText($0) }
             }
-            .sheet(isPresented: $showAsk) {
-                if let lecture = controller.lecture {
-                    // Half height: the live transcript stays visible above it, and recording goes on.
-                    NavigationStack {
-                        AskView(lecture: lecture, session: askSession, recording: controller)
-                            .navigationTitle("Ask about the lecture so far")
-                            .navigationBarTitleDisplayMode(.inline)
-                            .toolbar {
-                                ToolbarItem(placement: .confirmationAction) {
-                                    Button("Done") { showAsk = false }
-                                }
-                            }
-                    }
-                    .presentationDetents([.medium, .large])
-                    .presentationBackgroundInteraction(.enabled(upThrough: .medium))
-                }
+            .onChange(of: askLayout) {
+                if askLayout == .split || askLayout == .floating { askOpenLayout = askLayout }
+                if askLayout != .bubble { askHasNews = false }
+            }
+            .onChange(of: askSession.isBusy) { wasBusy, isBusy in
+                if wasBusy, !isBusy, askLayout == .bubble { askHasNews = true }
             }
         }
         .translationTask(controller.translationConfiguration) { session in
@@ -154,8 +171,12 @@ struct RecordingView: View {
                             .padding(.top, 40)
                     }
                     ForEach(controller.liveSegments, id: \.uid) { segment in
-                        LiveSegmentRow(segment: segment, sideBySide: sizeClass == .regular)
+                        LiveSegmentRow(segment: segment, sideBySide: sizeClass == .regular && !isAskDocked)
                             .id(segment.uid)
+                            .contentShape(Rectangle())
+                            .contextMenu { segmentMenu(segment) }
+                            // Can be dropped into the question field.
+                            .draggable(segment.text)
                     }
                     if !controller.partialText.isEmpty {
                         Text(controller.partialText)
@@ -172,6 +193,10 @@ struct RecordingView: View {
             .onChange(of: controller.partialText) {
                 if followLive { proxy.scrollTo("live-bottom", anchor: .bottom) }
             }
+            // The pane shrinks when the panel docks or the keyboard comes up; keep the live end in view.
+            .onScrollGeometryChange(for: CGSize.self, of: { $0.containerSize }) { _, _ in
+                if followLive { proxy.scrollTo("live-bottom", anchor: .bottom) }
+            }
             .safeAreaInset(edge: .top) {
                 HStack {
                     Spacer()
@@ -186,51 +211,161 @@ struct RecordingView: View {
 
     private var controls: some View {
         HStack(spacing: 36) {
-            Button {
-                controller.addBookmark()
-            } label: {
-                Label("Bookmark", systemImage: "bookmark.fill")
-                    .labelStyle(.verticalIcon)
-            }
-            .disabled(controller.phase != .recording)
-
-            Button {
-                showSlideCapture = true
-            } label: {
-                Label("Slide", systemImage: "camera.viewfinder")
-                    .labelStyle(.verticalIcon)
-            }
-            .disabled(controller.phase != .recording)
-
-            Button {
-                showAsk = true
-            } label: {
-                Label("Ask AI", systemImage: "sparkles")
-                    .labelStyle(.verticalIcon)
-            }
-            .disabled(controller.lecture == nil || !(controller.phase == .recording || isPaused))
-
-            Button {
-                if case .paused = controller.phase { controller.resume() } else { controller.pause() }
-            } label: {
-                Image(systemName: isPaused ? "play.circle.fill" : "pause.circle.fill")
-                    .font(.system(size: 64))
-                    .accessibilityLabel(isPaused ? "Resume" : "Pause")
-            }
-            .disabled(!(controller.phase == .recording || isPaused))
-
-            Button(role: .destructive) {
-                confirmStop = true
-            } label: {
-                Label("End", systemImage: "stop.circle.fill")
-                    .labelStyle(.verticalIcon)
-            }
-            .disabled(!(controller.phase == .recording || isPaused))
+            controlButtons(compact: false)
         }
+        .labelStyle(.verticalIcon)
         .font(.title3)
         .padding(.vertical, 16)
         .frame(maxWidth: .infinity)
         .background(.bar)
+    }
+
+    /// The clock and the controls in one row while the panel is docked, so the transcript and the
+    /// panel share the rest of the screen.
+    private var compactBar: some View {
+        HStack(spacing: 14) {
+            Image(systemName: statusIcon)
+                .foregroundStyle(statusColor)
+                .accessibilityLabel(statusText)
+            Text(TimeFormat.clock(controller.elapsed))
+                .monospacedDigit()
+                .fixedSize()
+                .environment(\.layoutDirection, .leftToRight)
+            // Gives way first on a narrow phone.
+            LevelMeter(level: controller.level)
+                .frame(minWidth: 16, maxWidth: 44)
+            Spacer(minLength: 0)
+            controlButtons(compact: true)
+        }
+        .labelStyle(.iconOnly)
+        .font(.title3)
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+        .background(.bar)
+    }
+
+    /// Ask AI only in the full bar: in the compact one the panel is already open below it.
+    @ViewBuilder
+    private func controlButtons(compact: Bool) -> some View {
+        Button {
+            controller.addBookmark()
+        } label: {
+            Label("Bookmark", systemImage: "bookmark.fill")
+        }
+        .disabled(controller.phase != .recording)
+
+        Button {
+            showSlideCapture = true
+        } label: {
+            Label("Slide", systemImage: "camera.viewfinder")
+        }
+        .disabled(controller.phase != .recording)
+
+        if !compact {
+            Button {
+                openAsk()
+            } label: {
+                Label("Ask AI", systemImage: "sparkles")
+            }
+            .disabled(controller.lecture == nil || !(controller.phase == .recording || isPaused))
+        }
+
+        Button {
+            if case .paused = controller.phase { controller.resume() } else { controller.pause() }
+        } label: {
+            Image(systemName: isPaused ? "play.circle.fill" : "pause.circle.fill")
+                .font(.system(size: compact ? 34 : 64))
+                .accessibilityLabel(isPaused ? "Resume" : "Pause")
+        }
+        .disabled(!(controller.phase == .recording || isPaused))
+
+        Button(role: .destructive) {
+            confirmStop = true
+        } label: {
+            Label("End", systemImage: "stop.circle.fill")
+        }
+        .disabled(!(controller.phase == .recording || isPaused))
+    }
+
+    // MARK: - Ask AI
+
+    private var isAskDocked: Bool {
+        askLayout == .split && controller.lecture != nil
+    }
+
+    private var askHeader: some View {
+        AskPanelHeader(isBusy: askSession.isBusy, sideBySide: sizeClass == .regular, layout: $askLayout)
+    }
+
+    private func openAsk() {
+        askLayout = askOpenLayout
+    }
+
+    /// Long-pressing a sentence quotes it into the question, or copies it.
+    @ViewBuilder
+    private func segmentMenu(_ segment: TranscriptSegment) -> some View {
+        Button {
+            quote(segment.text, at: segment.start)
+        } label: {
+            Label("Ask AI about this", systemImage: "sparkles")
+        }
+        .disabled(controller.lecture == nil)
+        if let translation = segment.translation {
+            Button {
+                quote(translation, at: segment.start)
+            } label: {
+                Label("Ask AI about the translation", systemImage: "character.bubble")
+            }
+            .disabled(controller.lecture == nil)
+        }
+        Button {
+            UIPasteboard.general.string = segment.text
+        } label: {
+            Label("Copy", systemImage: "doc.on.doc")
+        }
+        if let translation = segment.translation {
+            Button {
+                UIPasteboard.general.string = translation
+            } label: {
+                Label("Copy translation", systemImage: "doc.on.doc")
+            }
+        }
+    }
+
+    /// With its timestamp, the form the transcript has in the prompt, so the answer can place it.
+    private func quote(_ text: String, at seconds: Double) {
+        askSession.quote("\(TimeFormat.stamp(seconds)) “\(text)”")
+        openAsk()
+    }
+
+    @ViewBuilder
+    private func floatingAsk(in bounds: CGSize) -> some View {
+        if let lecture = controller.lecture {
+            switch askLayout {
+            case .floating:
+                FloatingWindow(frame: Binding(get: { askWindowFrame ?? defaultAskWindowFrame(in: bounds) },
+                                              set: { askWindowFrame = $0 }),
+                               bounds: bounds) {
+                    askHeader
+                } content: {
+                    AskView(lecture: lecture, session: askSession, recording: controller)
+                }
+            case .bubble:
+                // Starts at the bottom corner, just above the controls.
+                FloatingBubble(center: Binding(get: { askBubbleCenter ?? CGPoint(x: bounds.width - 40, y: bounds.height - 160) },
+                                               set: { askBubbleCenter = $0 }),
+                               bounds: bounds, isBusy: askSession.isBusy, hasNews: askHasNews, open: openAsk)
+            case .hidden, .split:
+                EmptyView()
+            }
+        }
+    }
+
+    /// The lower part of the screen above the controls, leaving the clock and the latest lines visible.
+    private func defaultAskWindowFrame(in bounds: CGSize) -> CGRect {
+        let width = min(bounds.width - 24, 440)
+        let height = min(bounds.height * 0.6, 560)
+        return CGRect(x: bounds.width - width - 12, y: bounds.height - height - 110, width: width, height: height)
     }
 
     private var finishedCard: some View {

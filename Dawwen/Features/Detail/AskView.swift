@@ -15,8 +15,19 @@ final class AskSession {
     }
 
     private(set) var entries: [Entry] = []
+    /// What's typed in the question field, kept here so the transcript can quote sentences into it.
+    var draft = ""
+    /// Set when a quote is added, so the question field takes the cursor.
+    var wantsInputFocus = false
 
     var isBusy: Bool { entries.last?.isStreaming == true }
+
+    /// Adds a line from the transcript to the question being typed, on a line of its own.
+    func quote(_ text: String) {
+        let typed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        draft = (typed.isEmpty ? "" : typed + "\n") + text + "\n"
+        wantsInputFocus = true
+    }
 
     /// `label` is what the history shows instead of `question` (a skill's name).
     func ask(_ question: String, label: String? = nil, about lecture: Lecture) {
@@ -106,12 +117,12 @@ final class AskSession {
 
 struct AskView: View {
     let lecture: Lecture
-    let session: AskSession
+    @Bindable var session: AskSession
     /// While recording: questions go over the transcript so far, and one button answers the
     /// question the lecturer just asked.
     var recording: RecordingController?
 
-    @State private var question = ""
+    @FocusState private var inputFocused: Bool
     private var examples: [String] {
         recording == nil ? [
             "What are the three most important ideas in this lecture?",
@@ -144,6 +155,7 @@ struct AskView: View {
                             VStack(alignment: .leading, spacing: 10) {
                                 Text(entry.question)
                                     .bold()
+                                    .textSelection(.enabled)
                                     .padding(10)
                                     .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
                                     .textDirection(rightToLeft: entry.question.isMostlyRTL)
@@ -162,25 +174,24 @@ struct AskView: View {
                     }
                     .padding()
                 }
+                // While recording the panel is reopened often; it opens on the latest answer.
+                .defaultScrollAnchor(recording == nil ? nil : .bottom, for: .initialOffset)
                 .onChange(of: session.entries.count) {
                     if let last = session.entries.last { withAnimation { proxy.scrollTo(last.id, anchor: .top) } }
                 }
             }
             Divider()
-            if let recording {
-                Button {
-                    session.askLive(nil, about: lecture, recording: recording)
-                } label: {
-                    Label("Answer the lecturer's question", systemImage: "hand.raised.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .disabled(session.isBusy)
-                .padding([.horizontal, .top])
-            }
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
+                    // A chip rather than a full-width button, so the panel fits beside the live transcript.
+                    if let recording {
+                        Button {
+                            session.askLive(nil, about: lecture, recording: recording)
+                        } label: {
+                            Label("Answer the lecturer's question", systemImage: "hand.raised.fill")
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
                     ForEach(AskSkill.all) { skill in
                         Button {
                             send(skill.instruction, label: skill.title)
@@ -188,28 +199,34 @@ struct AskView: View {
                             Label(skill.title, systemImage: skill.icon)
                         }
                         .buttonStyle(.bordered)
-                        .controlSize(.small)
                     }
                 }
+                .controlSize(.small)
                 .padding(.horizontal)
             }
             .padding(.top, 10)
             .disabled(session.isBusy)
             HStack(alignment: .bottom, spacing: 10) {
-                TextField("Ask about the lecture… / اسأل عن المحاضرة…", text: $question, axis: .vertical)
+                TextField("Ask about the lecture… / اسأل عن المحاضرة…", text: $session.draft, axis: .vertical)
                     .lineLimit(1...4)
                     .textFieldStyle(.roundedBorder)
-                    .onSubmit { send(question) }
+                    .focused($inputFocused)
+                    .onSubmit { send(session.draft) }
                 Button {
-                    send(question)
+                    send(session.draft)
                 } label: {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.system(size: 30))
                         .accessibilityLabel("Send")
                 }
-                .disabled(question.trimmingCharacters(in: .whitespaces).isEmpty || session.isBusy)
+                .disabled(session.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || session.isBusy)
             }
             .padding()
+        }
+        .task(id: session.wantsInputFocus) {
+            guard session.wantsInputFocus else { return }
+            session.wantsInputFocus = false
+            inputFocused = true
         }
     }
 
@@ -222,7 +239,7 @@ struct AskView: View {
         } else {
             session.ask(trimmed, label: label, about: lecture)
         }
-        if label == nil { question = "" }
+        if label == nil { session.draft = "" }
     }
 }
 
@@ -271,10 +288,24 @@ private struct SavedQuestionView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text(entry.question)
                 .bold()
+                .textSelection(.enabled)
                 .padding(10)
                 .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
                 .textDirection(rightToLeft: entry.question.isMostlyRTL)
             MarkdownView(text: entry.answer)
+            Button {
+                UIPasteboard.general.string = plainAnswer
+            } label: {
+                Label("Copy answer", systemImage: "doc.on.doc")
+            }
+            .font(.caption)
+            .buttonStyle(.borderless)
         }
+    }
+
+    /// The answer without the inline Markdown marks, for pasting into notes.
+    private var plainAnswer: String {
+        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        return (try? AttributedString(markdown: entry.answer, options: options)).map { String($0.characters) } ?? entry.answer
     }
 }
