@@ -57,7 +57,7 @@ struct TranscriptListView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 6) {
                     if segments.isEmpty {
-                        ContentUnavailableView("لا نص بعد", systemImage: "text.bubble", description: Text("استخدم «فرّغ من الصوت» لإنشاء النص."))
+                        ContentUnavailableView("No transcript yet", systemImage: "text.bubble", description: Text("Use “Fill in missing transcript from audio” to create one."))
                             .padding(.top, 40)
                     }
                     ForEach(visible, id: \.uid) { segment in
@@ -77,18 +77,18 @@ struct TranscriptListView: View {
                 .padding(.horizontal)
                 .padding(.bottom)
             }
-            .searchable(text: $query, placement: .toolbar, prompt: "ابحث في النص")
+            .searchable(text: $query, placement: .toolbar, prompt: "Search the transcript")
             .onChange(of: active) {
                 guard follow, player.isPlaying, query.isEmpty, let active else { return }
                 withAnimation { proxy.scrollTo(active, anchor: .center) }
             }
             .safeAreaInset(edge: .top) {
                 HStack {
-                    Text("\(segments.count) جملة")
+                    Text("\(segments.count) sentences")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Toggle("تتبّع التشغيل", isOn: $follow)
+                    Toggle("Follow playback", isOn: $follow)
                         .toggleStyle(.button)
                         .font(.caption)
                 }
@@ -135,7 +135,7 @@ private struct TranscriptRow: View {
 
                 VStack(alignment: .leading, spacing: 4) {
                     if let speaker = segment.speaker {
-                        Text("المتحدث \(speaker)")
+                        Text("Speaker \(speaker)")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -154,7 +154,7 @@ private struct TranscriptRow: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
-            Button("تعديل النص", systemImage: "pencil", action: onEdit)
+            Button("Edit text", systemImage: "pencil", action: onEdit)
         }
     }
 }
@@ -173,17 +173,17 @@ private struct SegmentEditSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("الجملة") {
-                    TextField("النص", text: $text, axis: .vertical)
+                Section("Sentence") {
+                    TextField("Text", text: $text, axis: .vertical)
                         .lineLimit(1...8)
                         .textDirection(rightToLeft: text.isMostlyRTL)
                 }
                 Section {
-                    TextField("الكلمة الخاطئة", text: $find)
-                    TextField("التصحيح", text: $replacement)
-                    Button("استبدل في كل المحاضرة") { replaceAll() }
+                    TextField("Wrong word", text: $find)
+                    TextField("Correction", text: $replacement)
+                    Button("Replace in the whole lecture") { replaceAll() }
                         .disabled(find.trimmingCharacters(in: .whitespaces).isEmpty)
-                    Button("أضف التصحيح إلى المفردات") { addToVocabulary() }
+                    Button("Add the correction to the vocabulary") { addToVocabulary() }
                         .disabled(replacement.trimmingCharacters(in: .whitespaces).isEmpty)
                     if let result {
                         Text(result)
@@ -191,19 +191,19 @@ private struct SegmentEditSheet: View {
                             .foregroundStyle(.secondary)
                     }
                 } header: {
-                    Text("تصحيح متكرر")
+                    Text("Repeated correction")
                 } footer: {
-                    Text("المفردات تساعد محرك التفريغ على التعرّف على الكلمة في المحاضرات القادمة.")
+                    Text("The vocabulary helps the transcriber recognize the word in future lectures.")
                 }
             }
-            .navigationTitle("تعديل")
+            .navigationTitle("Edit")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("إلغاء") { dismiss() }
+                    Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("حفظ") {
+                    Button("Save") {
                         segment.text = text
                         dismiss()
                     }
@@ -221,7 +221,7 @@ private struct SegmentEditSheet: View {
             return total + 1
         }
         text = segment.text
-        result = "عُدّلت \(count) جملة"
+        result = "Edited \(count) sentences"
     }
 
     private func addToVocabulary() {
@@ -230,10 +230,10 @@ private struct SegmentEditSheet: View {
         let current = defaults.string(forKey: SettingsKey.vocabulary) ?? ""
         let existing = current.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
         guard !existing.contains(term) else {
-            result = "الكلمة موجودة في المفردات"
+            result = "The word is already in the vocabulary"
             return
         }
         defaults.set(current.isEmpty ? term : current + "\n" + term, forKey: SettingsKey.vocabulary)
-        result = "أُضيفت إلى المفردات"
+        result = "Added to the vocabulary"
     }
 }

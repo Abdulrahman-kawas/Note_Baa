@@ -26,13 +26,13 @@ final class SummaryJob {
             return
         }
         guard !lecture.segments.isEmpty else {
-            errorMessage = "لا يوجد نص لتلخيصه بعد."
+            errorMessage = "There is no transcript to summarize yet."
             return
         }
         let request = Self.summaryRequest(for: lecture, outputLanguage: settings.summaryLanguage)
         let modelName = settings.claudeModel.title
         run(name: "dawwen.summary") {
-            self.progress = "\(modelName) يقرأ المحاضرة كاملة…"
+            self.progress = "\(modelName) is reading the whole lecture…"
             var text = ""
             var lastRedraw = Date.distantPast
             for try await piece in client.stream(request) {
@@ -40,7 +40,7 @@ final class SummaryJob {
                 // Redraw a few times a second, not once per token.
                 if Date().timeIntervalSince(lastRedraw) > 0.2 {
                     self.draft = text
-                    self.progress = "\(modelName) يكتب…"
+                    self.progress = "\(modelName) is writing…"
                     lastRedraw = Date()
                 }
             }
@@ -65,7 +65,7 @@ final class SummaryJob {
         }
         let paragraphs = LecturePrompt.transcriptParagraphs(for: lecture)
         guard !paragraphs.isEmpty else {
-            errorMessage = "لا يوجد نص لتلخيصه بعد."
+            errorMessage = "There is no transcript to summarize yet."
             return
         }
         let language = lecture.sourceLanguage
@@ -78,16 +78,16 @@ final class SummaryJob {
             try Task.checkCancellation()
             var final = original
             if Languages.code(outputLanguage) != Languages.code(language) {
-                self.progress = "ترجمة الملخص إلى \(Languages.name(for: outputLanguage))…"
+                self.progress = "Translating the summary into \(Languages.name(for: outputLanguage))…"
                 if let session = await TranslationSupport.installedSession(source: language, target: outputLanguage, purpose: .document) {
                     final = try await TranslationSupport.translateMarkdown(original, with: session)
                 } else {
-                    self.errorMessage = "لغة الترجمة غير منزّلة؛ حُفظ الملخص بلغة المحاضرة. نزّلها من الإعدادات."
+                    self.errorMessage = "The translation language isn't downloaded; the summary was saved in the lecture's language. Download it in Settings."
                 }
             }
             lecture.summary = final
             lecture.summaryOriginal = final == original ? nil : original
-            lecture.summaryModel = "Apple Intelligence (على الجهاز)"
+            lecture.summaryModel = "Apple Intelligence (on device)"
             lecture.summaryDate = .now
             try? context.save()
             try? LectureArchive.write(lecture)
@@ -104,13 +104,13 @@ final class SummaryJob {
             userMessage: request.userMessage, effort: request.effort, maxTokens: 32_000, outputSchema: nil
         )
         run(name: "dawwen.summary.batch") {
-            self.progress = "إرسال الطلب إلى الخادم…"
+            self.progress = "Sending the request to the server…"
             let job = try await server.createJob(ServerClient.JobRequest(
                 type: "summary", lectureID: lecture.id, engine: "claude-batch", claude: call
             ))
             lecture.summaryJobID = job.id
             try? context.save()
-            self.errorMessage = "أُرسل الطلب بنصف السعر. يصل الملخص خلال ساعة تقريباً؛ افتح المحاضرة لاحقاً."
+            self.errorMessage = "Request sent at half price. The summary arrives in about an hour; open the lecture later."
         }
     }
 
@@ -135,7 +135,7 @@ final class SummaryJob {
             case "failed":
                 lecture.summaryJobID = nil
                 try? context.save()
-                errorMessage = "تعذّر الملخص المؤجل: \(job.error ?? "")"
+                errorMessage = "The deferred summary failed: \(job.error ?? "")"
             default:
                 break
             }
@@ -194,16 +194,16 @@ struct SummaryView: View {
                         Text(job.progress ?? "")
                             .foregroundStyle(.secondary)
                         Spacer()
-                        Button("إيقاف", role: .cancel) { job.cancel() }
+                        Button("Stop", role: .cancel) { job.cancel() }
                     }
                     if !job.draft.isEmpty {
                         MarkdownView(text: job.draft)
                     }
                 } else if let summary = lecture.summary {
                     if lecture.summaryOriginal != nil {
-                        Picker("اللغة", selection: $showOriginal) {
-                            Text("المترجَم").tag(false)
-                            Text("الأصل").tag(true)
+                        Picker("Language", selection: $showOriginal) {
+                            Text("Translated").tag(false)
+                            Text("Original").tag(true)
                         }
                         .pickerStyle(.segmented)
                         .frame(maxWidth: 260)
@@ -221,12 +221,12 @@ struct SummaryView: View {
                         Button {
                             UIPasteboard.general.string = shown
                         } label: {
-                            Label("نسخ", systemImage: "doc.on.doc")
+                            Label("Copy", systemImage: "doc.on.doc")
                         }
-                        actionsMenu(title: "إعادة التلخيص")
+                        actionsMenu(title: "Summarize again")
                     }
                 } else if lecture.summaryJobID != nil {
-                    Label("ملخص مؤجل (Batch) قيد التحضير على الخادم.", systemImage: "clock")
+                    Label("A deferred (Batch) summary is being prepared on the server.", systemImage: "clock")
                         .foregroundStyle(.secondary)
                 } else {
                     emptyState
@@ -246,37 +246,37 @@ struct SummaryView: View {
 
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label("ملخص للدراسة", systemImage: "sparkles")
+            Label("Study summary", systemImage: "sparkles")
                 .font(.title3.bold())
-            Text("محاور المحاضرة بطوابعها الزمنية، والمصطلحات، والأمثلة، وما علّمته من نقاط، ومواعيد الواجبات، وأسئلة مراجعة.")
+            Text("The lecture's main topics with timestamps, key terms, examples, the points you bookmarked, assignment deadlines, and review questions.")
                 .foregroundStyle(.secondary)
             Button {
                 job.summarizeOnDevice(lecture, context: context)
             } label: {
-                Label("لخّص على الجهاز مجاناً (Apple Intelligence + الترجمة)", systemImage: "ipad")
+                Label("Summarize on device for free (Apple Intelligence + translation)", systemImage: "ipad")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            Text("دون إنترنت ودون تكلفة للمحاضرات الإنجليزية. ملخص أقصر من Claude.")
+            Text("Offline and free for English lectures. Shorter than Claude's summary.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Button {
                 job.summarizeWithClaude(lecture, context: context)
             } label: {
-                Label("لخّص بـ \(model.title)", systemImage: "sparkles")
+                Label("Summarize with \(model.title)", systemImage: "sparkles")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
             .controlSize(.large)
-            Text("ملاحظات دراسة مفصّلة بالعربية مباشرة. يرسل النص (دون الصوت). السعر: \(model.priceNote).")
+            Text("Detailed study notes. Sends the transcript (not the audio). Price: \(model.priceNote).")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if hasServer {
                 Button {
                     job.summarizeLater(lecture, context: context)
                 } label: {
-                    Label("لخّص لاحقاً بنصف السعر (Batch عبر الخادم)", systemImage: "clock.arrow.circlepath")
+                    Label("Summarize later at half price (Batch via the server)", systemImage: "clock.arrow.circlepath")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
@@ -286,10 +286,10 @@ struct SummaryView: View {
 
     private func actionsMenu(title: String) -> some View {
         Menu {
-            Button("على الجهاز (مجاني)") { job.summarizeOnDevice(lecture, context: context) }
-            Button("بـ \(model.title)") { job.summarizeWithClaude(lecture, context: context) }
+            Button("On device (free)") { job.summarizeOnDevice(lecture, context: context) }
+            Button("With \(model.title)") { job.summarizeWithClaude(lecture, context: context) }
             if hasServer {
-                Button("بـ \(model.title) لاحقاً (Batch)") { job.summarizeLater(lecture, context: context) }
+                Button("With \(model.title) later (Batch)") { job.summarizeLater(lecture, context: context) }
             }
         } label: {
             Label(title, systemImage: "arrow.clockwise")

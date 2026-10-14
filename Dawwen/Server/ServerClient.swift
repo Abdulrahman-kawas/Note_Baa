@@ -23,8 +23,8 @@ struct ServerClient: Sendable {
 
         var errorDescription: String? {
             switch self {
-            case .http(let code, let message): "خطأ من الخادم (\(code)): \(message)"
-            case .invalidResponse: "رد غير متوقع من الخادم."
+            case .http(let code, let message): "Server error (\(code)): \(message)"
+            case .invalidResponse: "Unexpected response from the server."
             }
         }
     }

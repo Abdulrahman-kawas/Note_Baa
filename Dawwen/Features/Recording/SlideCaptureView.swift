@@ -19,7 +19,7 @@ struct SlideCaptureView: View {
                     SlideScannerRepresentable(bridge: bridge)
                         .ignoresSafeArea(edges: .bottom)
                         .overlay(alignment: .top) {
-                            Text("وجّه الكاميرا إلى الشريحة ثم اضغط «التقط»")
+                            Text("Point the camera at the slide, then tap Capture")
                                 .font(.footnote)
                                 .padding(8)
                                 .background(.ultraThinMaterial, in: Capsule())
@@ -27,20 +27,20 @@ struct SlideCaptureView: View {
                         }
                 } else {
                     ContentUnavailableView(
-                        "الماسح غير متاح",
+                        "Scanner unavailable",
                         systemImage: "camera.metering.unknown",
-                        description: Text("يحتاج الماسح كاميرا تعمل وإذناً للوصول إليها.")
+                        description: Text("The scanner needs a working camera and permission to use it.")
                     )
                 }
             }
-            .navigationTitle("التقاط شريحة")
+            .navigationTitle("Capture slide")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("إلغاء") { dismiss() }
+                    Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("التقط") {
+                    Button("Capture") {
                         onCapture(bridge.currentText())
                         dismiss()
                     }

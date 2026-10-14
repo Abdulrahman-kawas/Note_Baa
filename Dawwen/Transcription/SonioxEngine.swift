@@ -129,7 +129,7 @@ final class SonioxEngine: LiveTranscriber, @unchecked Sendable {
             } catch {
                 self.queue.async {
                     self.isConnecting = false
-                    self.scheduleReconnect(reason: "تعذّر الحصول على مفتاح Soniox: \(error.localizedDescription)")
+                    self.scheduleReconnect(reason: "Couldn't get a Soniox key: \(error.localizedDescription)")
                 }
             }
         }
@@ -308,7 +308,7 @@ final class SonioxEngine: LiveTranscriber, @unchecked Sendable {
         guard !isClosed else { return }
         if let handshakeStatus, [401, 402, 403].contains(handshakeStatus) {
             // A wrong key or an empty balance won't fix itself by reconnecting.
-            handleError(code: handshakeStatus, message: "رُفض الاتصال")
+            handleError(code: handshakeStatus, message: "Connection refused")
             return
         }
         scheduleReconnect(reason: reason)
@@ -318,7 +318,7 @@ final class SonioxEngine: LiveTranscriber, @unchecked Sendable {
         guard !isClosed, !isFinishing else { return }
         reconnectAttempt += 1
         let delay = min(30, pow(2, Double(min(reconnectAttempt, 5))))
-        continuation.yield(.status("انقطع الاتصال بـ Soniox (\(reason)). إعادة المحاولة خلال \(Int(delay)) ث، والتسجيل مستمر."))
+        continuation.yield(.status("Lost the connection to Soniox (\(reason)). Retrying in \(Int(delay)) s; recording continues."))
         queue.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, !self.isClosed, !self.isFinishing, self.socket == nil else { return }
             self.connect()
@@ -417,7 +417,7 @@ final class SonioxEngine: LiveTranscriber, @unchecked Sendable {
             // Timeout, session limit, rate limit or server trouble: open a new connection.
             if let socket { connectionLost(socket, reason: "\(code)") }
         default:
-            let hint = (code == 401 || code == 403) ? "تحقق من مفتاح Soniox." : (code == 402 ? "رصيد Soniox انتهى." : "")
+            let hint = (code == 401 || code == 403) ? "Check the Soniox key." : (code == 402 ? "Soniox credit has run out." : "")
             continuation.yield(.failure("Soniox \(code): \(message) \(hint)"))
             close()
         }

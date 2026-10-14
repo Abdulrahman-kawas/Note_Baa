@@ -51,22 +51,22 @@ struct LibraryView: View {
                 }
                 .onDelete(perform: delete)
             }
-            .navigationTitle("دوّن")
-            .searchable(text: $search, prompt: "ابحث في العناوين والنصوص")
+            .navigationTitle("Dawwen")
+            .searchable(text: $search, prompt: "Search titles and transcripts")
             .task(id: search) { await runSearch(search) }
             .overlay {
                 if lectures.isEmpty {
                     ContentUnavailableView {
-                        Label("لا محاضرات بعد", systemImage: "waveform.badge.mic")
+                        Label("No lectures yet", systemImage: "waveform.badge.mic")
                     } description: {
-                        Text("ابدأ تسجيلاً جديداً، أو استورد ملفاً صوتياً.")
+                        Text("Start a new recording, or import an audio file.")
                     } actions: {
-                        Button("تسجيل جديد") { showNewLecture = true }
+                        Button("New recording") { showNewLecture = true }
                             .buttonStyle(.borderedProminent)
                         // After a database reset: rebuild the library from each folder's lecture.json.
-                        Button("استعادة المحاضرات من ملفاتها") {
+                        Button("Restore lectures from their files") {
                             let count = (try? LectureArchive.restoreAll(into: context)) ?? 0
-                            restoreMessage = count == 0 ? "لا محاضرات محفوظة للاستعادة." : "استُعيدت \(count) محاضرة."
+                            restoreMessage = count == 0 ? "No saved lectures to restore." : "Restored \(count) lectures."
                         }
                         if let restoreMessage { Text(restoreMessage).font(.footnote) }
                     }
@@ -79,21 +79,21 @@ struct LibraryView: View {
                     Button {
                         showNewLecture = true
                     } label: {
-                        Label("تسجيل جديد", systemImage: "record.circle")
+                        Label("New recording", systemImage: "record.circle")
                     }
                 }
                 ToolbarItem {
                     Button {
                         showImporter = true
                     } label: {
-                        Label("استيراد ملف صوتي", systemImage: "square.and.arrow.down")
+                        Label("Import audio file", systemImage: "square.and.arrow.down")
                     }
                 }
                 ToolbarItem {
                     Button {
                         showSettings = true
                     } label: {
-                        Label("الإعدادات", systemImage: "gearshape")
+                        Label("Settings", systemImage: "gearshape")
                     }
                 }
             }
@@ -102,7 +102,7 @@ struct LibraryView: View {
                 LectureDetailView(lecture: lecture)
                     .id(lecture.id)
             } else {
-                ContentUnavailableView("اختر محاضرة", systemImage: "text.bubble", description: Text("النص والترجمة والملخص يظهرون هنا."))
+                ContentUnavailableView("Choose a lecture", systemImage: "text.bubble", description: Text("The transcript, translation and summary appear here."))
             }
         }
         // A Shortcut or Siri asked for a new lecture.
@@ -136,8 +136,8 @@ struct LibraryView: View {
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [.audio]) { result in
             importAudio(result)
         }
-        .alert("تعذّر الاستيراد", isPresented: Binding(get: { importError != nil }, set: { if !$0 { importError = nil } })) {
-            Button("حسناً", role: .cancel) {}
+        .alert("Import failed", isPresented: Binding(get: { importError != nil }, set: { if !$0 { importError = nil } })) {
+            Button("OK", role: .cancel) {}
         } message: {
             Text(importError ?? "")
         }
@@ -196,10 +196,10 @@ private struct LectureRow: View {
                 Text("·")
                 Text(TimeFormat.duration(lecture.duration))
                 if lecture.summary != nil {
-                    Image(systemName: "sparkles").accessibilityLabel("ملخص جاهز")
+                    Image(systemName: "sparkles").accessibilityLabel("Summary ready")
                 }
                 if lecture.status == .interrupted {
-                    Label("مستعادة", systemImage: "exclamationmark.triangle")
+                    Label("Restored", systemImage: "exclamationmark.triangle")
                         .labelStyle(.titleAndIcon)
                         .foregroundStyle(.orange)
                 }

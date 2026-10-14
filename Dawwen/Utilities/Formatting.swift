@@ -25,11 +25,11 @@ enum TimeFormat {
         return String(format: "%02d:%02d:%02d,%03d", total / 3600, (total % 3600) / 60, total % 60, millis)
     }
 
-    /// "3 س 25 د".
+    /// "3 h 25 min".
     static func duration(_ seconds: Double) -> String {
         let minutes = Int(max(0, seconds) / 60)
-        if minutes < 1 { return "أقل من دقيقة" }
-        return minutes >= 60 ? "\(minutes / 60) س \(minutes % 60) د" : "\(minutes) د"
+        if minutes < 1 { return "Under a minute" }
+        return englishDuration(seconds)
     }
 
     static func englishDuration(_ seconds: Double) -> String {

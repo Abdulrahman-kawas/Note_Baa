@@ -23,15 +23,15 @@ struct PlayerBar: View {
                     .font(.caption)
                 Spacer()
                 Button { player.skip(by: -15) } label: {
-                    Image(systemName: "gobackward.15").accessibilityLabel("رجوع 15 ثانية")
+                    Image(systemName: "gobackward.15").accessibilityLabel("Back 15 seconds")
                 }
                 Button { player.togglePlayback() } label: {
                     Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
                         .font(.system(size: 40))
-                        .accessibilityLabel(player.isPlaying ? "إيقاف مؤقت" : "تشغيل")
+                        .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
                 }
                 Button { player.skip(by: 15) } label: {
-                    Image(systemName: "goforward.15").accessibilityLabel("تقديم 15 ثانية")
+                    Image(systemName: "goforward.15").accessibilityLabel("Forward 15 seconds")
                 }
                 Spacer()
                 Menu {

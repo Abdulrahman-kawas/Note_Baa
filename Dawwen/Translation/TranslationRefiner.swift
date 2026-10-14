@@ -110,7 +110,7 @@ enum TranslationRefiner {
             while let json = try await group.next() {
                 changed += apply(json, to: lecture)
                 done += 1
-                progress(Double(done) / Double(requests.count), "تحسين الترجمة: \(done) من \(requests.count)")
+                progress(Double(done) / Double(requests.count), "Refining translation: \(done) of \(requests.count)")
                 try context.save()
                 if next < requests.count {
                     let request = requests[next]

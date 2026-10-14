@@ -1,0 +1,4 @@
+/* English is the app's only localization, so iOS lays the interface out left to right. */
+"CFBundleDisplayName" = "Dawwen";
+"NSMicrophoneUsageDescription" = "Dawwen records the lecture audio to save it and turn it into text.";
+"NSSpeechRecognitionUsageDescription" = "Dawwen turns speech into text on your device.";

@@ -16,7 +16,7 @@ struct LectureLiveActivity: Widget {
                         .font(.headline)
                         .lineLimit(1)
                     if context.state.isPaused {
-                        Text("متوقف مؤقتاً")
+                        Text("Paused")
                             .foregroundStyle(.secondary)
                     } else {
                         Text(timerInterval: context.attributes.startedAt...Date.distantFuture, countsDown: false)
@@ -39,7 +39,7 @@ struct LectureLiveActivity: Widget {
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     if context.state.isPaused {
-                        Text("متوقف")
+                        Text("Paused")
                     } else {
                         Text(timerInterval: context.attributes.startedAt...Date.distantFuture, countsDown: false)
                             .monospacedDigit()
