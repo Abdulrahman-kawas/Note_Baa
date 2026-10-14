@@ -5,11 +5,15 @@ import Foundation
 enum LecturePrompt {
     /// Groups phrases into ~1-minute paragraphs, each opening with its [hh:mm:ss] position.
     static func transcriptParagraphs(for lecture: Lecture) -> [String] {
+        transcriptParagraphs(of: lecture.sortedSegments)
+    }
+
+    static func transcriptParagraphs(of segments: [TranscriptSegment]) -> [String] {
         var paragraphs: [String] = []
         var current = ""
         var paragraphStart: Double?
         var speaker: String?
-        for segment in lecture.sortedSegments {
+        for segment in segments {
             let speakerChanged = segment.speaker != nil && segment.speaker != speaker
             if let start = paragraphStart, segment.start - start >= 60 || speakerChanged {
                 paragraphs.append(current.trimmingCharacters(in: .whitespaces))
@@ -80,12 +84,90 @@ enum LecturePrompt {
         """
     }
 
-    static func questionRequest(_ question: String, outputLanguage: String) -> String {
-        let language = Languages.englishName(for: outputLanguage)
-        return """
-        Answer the student's question in \(language), using the lecture transcript. Cite the [hh:mm:ss] timestamps your answer draws on. If the lecture does not cover the question, say so plainly; you may then add a short general explanation, labelled as not coming from the lecture.
+    // MARK: - While recording
 
-        Question: \(question)
+    static func livePreamble(for lecture: Lecture, elapsed: Double) -> String {
+        """
+        You are the study assistant in Dawwen, a lecture-recording app, helping a student during a lecture \
+        that is still going on. The system text that follows is the transcript so far: \
+        \(TimeFormat.englishDuration(elapsed)) of a lecture spoken mainly in \
+        \(Languages.englishName(for: lecture.sourceLanguage)). It comes from live speech recognition, so expect \
+        misheard words, missing punctuation and occasional wrong speaker labels. Every paragraph starts with its \
+        [hh:mm:ss] position; the last lines are what is being said right now.
+        """
+    }
+
+    /// The live transcript, with the phrase still being recognised at the end.
+    static func liveTranscript(_ segments: [TranscriptSegment], partial: String) -> String {
+        var paragraphs = transcriptParagraphs(of: segments)
+        let partial = partial.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !partial.isEmpty { paragraphs.append("(being said now) " + partial) }
+        return paragraphs.joined(separator: "\n\n")
+    }
+
+    /// The lecturer just asked the class something: find the question and give an answer to say aloud.
+    static func lecturerQuestionRequest(lectureLanguage: String, outputLanguage: String) -> String {
+        let spoken = Languages.englishName(for: lectureLanguage)
+        let reading = Languages.englishName(for: outputLanguage)
+        let translation = Languages.code(lectureLanguage) == Languages.code(outputLanguage)
+            ? ""
+            : "\n**Translation:** the answer in \(reading)."
+        return """
+        The lecturer has just asked the class a question. Find the most recent question the lecturer asked, in the last few minutes of the transcript, and answer it so the student can say the answer aloud in class.
+
+        Reply in this format:
+        **Question:** the question, in \(spoken), as the lecturer meant it.
+        **Answer:** one to three short sentences in \(spoken), ready to say aloud.\(translation)
+        **Why:** one sentence in \(reading), pointing to the [hh:mm:ss] moment in the lecture it comes from, or saying it is general knowledge.
+
+        Base the answer on what was taught in this lecture first. If there is no question from the lecturer in the last few minutes, say so in one sentence in \(reading).
+        """
+    }
+
+    // MARK: - Questions and tutoring
+
+    /// One earlier question and answer, so follow-ups ("explain it again", a quiz answer) make sense.
+    struct Exchange {
+        let question: String
+        let answer: String
+    }
+
+    /// `history` is oldest first. `live`: the lecture is still going on.
+    static func questionRequest(_ question: String, outputLanguage: String, bilingual: Bool,
+                                live: Bool = false, history: [Exchange] = []) -> String {
+        var text = """
+        Answer the student's message using the lecture transcript. Cite the [hh:mm:ss] timestamps your answer draws on. If the lecture does not cover the question, say so plainly; you may then add a general explanation, labelled as not coming from the lecture.
+
+        \(tutorGuide(outputLanguage: outputLanguage, bilingual: bilingual, live: live))
+        """
+        if !history.isEmpty {
+            text += "\n\nCONVERSATION SO FAR (oldest first):\n" + history.map { exchange in
+                let answer = exchange.answer.count > 1_500 ? String(exchange.answer.prefix(1_500)) + "…" : exchange.answer
+                return "Student: \(exchange.question)\nYou: \(answer)"
+            }.joined(separator: "\n\n")
+        }
+        return text + "\n\nStudent's message: \(question)"
+    }
+
+    /// How the assistant teaches: when to go deep with examples and when to stay short.
+    static func tutorGuide(outputLanguage: String, bilingual: Bool, live: Bool) -> String {
+        let language = Languages.englishName(for: outputLanguage)
+        let languageRule = bilingual
+            ? "Answer in both Arabic and English: the answer in Arabic first, then the same answer in English after a line containing only ---. After a long explanation, the English part may keep to the key points. Write each technical term in both languages the first time, like: الانحدار الخطي (linear regression)."
+            : "Answer in \(language), unless the student writes in another language; then answer in theirs. Give each technical term in the lecture's language in parentheses the first time it appears."
+        let pace = live
+            ? "\n- The lecture is still going on and the student reads between moments of listening. Unless they ask for detail, keep to a few short lines they can read in seconds."
+            : ""
+        return """
+        How to teach (you are a patient tutor, not a search engine):
+        - Match the depth to the message. A quick factual question (a definition, a date, "what did they say about X") gets one to three sentences. "Explain", "why", "how", "I don't get it", or a concept that is clearly new or hard gets a real explanation: the idea in one plain sentence, then step by step, then an example (the lecturer's own example first, with its timestamp, otherwise an everyday one), then the common mistake to avoid.
+        - When the student asks for detail, examples or "more", be generous. When they ask for a summary, a definition or "briefly", be brief.
+        - Build on what the lecture already covered, define each new term the first time, use an analogy when an idea is abstract, and use numbered steps or a small table for a process or a comparison.
+        - Keep it a conversation. After a long explanation, end with one short question that checks understanding or offers the next step (an example, a quiz question, going deeper). Skip this after short answers.
+        - When the student answers a quiz question you asked, first say whether it is right, partly right or wrong, then explain what was missing, kindly and briefly, and offer another question.
+        - Read "this", "it" or "again" against the conversation so far, and build on what you already explained instead of repeating it.\(pace)
+        - \(languageRule)
+        - Use Markdown: short paragraphs, **bold** for key terms, bullet points for lists.
         """
     }
 }

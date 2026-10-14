@@ -10,19 +10,19 @@ enum EngineKind: String, CaseIterable, Identifiable, Codable {
 
     var title: String {
         switch self {
-        case .auto: "تلقائي"
-        case .apple: "Apple على الجهاز"
-        case .soniox: "Soniox السحابي"
-        case .none: "تسجيل فقط"
+        case .auto: "Automatic"
+        case .apple: "Apple on device"
+        case .soniox: "Soniox cloud"
+        case .none: "Record only"
         }
     }
 
     var detail: String {
         switch self {
-        case .auto: "Apple على الجهاز للإنجليزية (مجاني ودون إنترنت)، وSoniox للعربية إن وُجد مفتاحه."
-        case .apple: "مجاني ودون إنترنت. SpeechTranscriber للإنجليزية؛ إملاء الجهاز للعربية."
-        case .soniox: "اختياري للدقة الأعلى وتمييز المتحدثين. يحتاج إنترنت ومفتاحاً (نحو 0.12 $ للساعة)."
-        case .none: "يحفظ البطارية؛ التفريغ لاحقاً من الصوت."
+        case .auto: "Apple on device for English (free and offline), and Soniox for Arabic if you have its key."
+        case .apple: "Free and offline. SpeechTranscriber for English; on-device dictation for Arabic."
+        case .soniox: "Optional, for higher accuracy and speaker labels. Needs internet and a key (about $0.12 per hour)."
+        case .none: "Saves battery; transcribe later from the audio."
         }
     }
 }
@@ -58,9 +58,9 @@ enum TranscriptionError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .missingSonioxKey:
-            "أضف مفتاح Soniox من الإعدادات، أو فعّل Soniox عبر الخادم."
+            "Add a Soniox key in Settings, or turn on Soniox through the server."
         case .unsupportedLanguage(let name):
-            "محرك Apple على هذا الجهاز لا يدعم \(name). استخدم Soniox، أو ثبّت لغة الإملاء من إعدادات لوحة المفاتيح."
+            "Apple's engine on this device doesn't support \(name). Use Soniox, or add the dictation language in Keyboard settings."
         }
     }
 }

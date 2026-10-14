@@ -30,7 +30,7 @@ enum GapFiller {
 
         for (index, item) in windows.enumerated() {
             try Task.checkCancellation()
-            progress(Double(index) / Double(windows.count), "الصوت غير المفرَّغ: \(index + 1) من \(windows.count)")
+            progress(Double(index) / Double(windows.count), "Untranscribed audio: \(index + 1) of \(windows.count)")
             // 1.5 s of padding gives the model whole words at the edges; phrases whose middle
             // falls in the padding belong to the neighbouring text and are dropped.
             let paddedStart = max(0, item.window.start - 1.5)
@@ -62,7 +62,7 @@ enum GapFiller {
 
         if let target = lecture.targetLanguage, !added.isEmpty,
            let session = await TranslationSupport.installedSession(source: language, target: target, purpose: .document) {
-            progress(1, "ترجمة الجمل المضافة…")
+            progress(1, "Translating the added sentences…")
             try await TranslationSupport.translate(added, with: session)
             try context.save()
         }

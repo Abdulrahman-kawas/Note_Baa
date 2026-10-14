@@ -11,11 +11,11 @@ enum LectureExporter {
 
         var title: String {
             switch self {
-            case .text: "نص (TXT)"
-            case .markdown: "Markdown مع الملخص"
-            case .srt: "ترجمة مرئية SRT (الأصل)"
-            case .srtTranslated: "ترجمة مرئية SRT (المترجَم)"
-            case .audio: "الصوت (M4A)"
+            case .text: "Text (TXT)"
+            case .markdown: "Markdown with summary"
+            case .srt: "SRT subtitles (original)"
+            case .srtTranslated: "SRT subtitles (translated)"
+            case .audio: "Audio (M4A)"
             }
         }
 
@@ -53,15 +53,15 @@ enum LectureExporter {
         var parts = [
             "# \(lecture.title)",
             "",
-            "- التاريخ: \(lecture.createdAt.formatted(date: .long, time: .shortened))",
-            "- المدة: \(TimeFormat.duration(lecture.duration))",
-            "- اللغة: \(Languages.name(for: lecture.sourceLanguage))",
+            "- Date: \(lecture.createdAt.formatted(date: .long, time: .shortened))",
+            "- Duration: \(TimeFormat.duration(lecture.duration))",
+            "- Language: \(Languages.name(for: lecture.sourceLanguage))",
             ""
         ]
         if let summary = lecture.summary {
-            parts += ["## الملخص", "", summary, ""]
+            parts += ["## Summary", "", summary, ""]
         }
-        parts += ["## النص الكامل", ""]
+        parts += ["## Full transcript", ""]
         for segment in lecture.sortedSegments {
             var line = "**\(TimeFormat.stamp(segment.start))** \(segment.text)"
             if let translation = segment.bestTranslation { line += "\n> \(translation)" }

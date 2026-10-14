@@ -22,7 +22,7 @@ enum FileTranscriber {
         for (index, url) in urls.enumerated() {
             try Task.checkCancellation()
             guard let file = try? AVAudioFile(forReading: url) else { continue }
-            progress("التفريغ من الصوت: الجزء \(index + 1) من \(urls.count)")
+            progress("Transcribing audio: part \(index + 1) of \(urls.count)")
             guard let module = await AppleSpeechEngine.makeModule(for: locale, live: false) else {
                 throw TranscriptionError.unsupportedLanguage(Languages.name(for: language))
             }

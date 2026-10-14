@@ -9,6 +9,7 @@ enum SettingsKey {
     static let askModel = "askModel"
     static let refineModel = "refineModel"
     static let summaryLanguage = "summaryLanguage"
+    static let bilingualAnswers = "bilingualAnswers"
     static let keepScreenOn = "keepScreenOn"
     static let vocabulary = "vocabulary"
     static let glossary = "glossary"
@@ -32,12 +33,14 @@ struct AppSettings {
     var targetLanguage: String
     var engine: EngineKind
     /// Summaries.
-    var claudeModel: ClaudeModelOption
-    /// "Ask the lecture": many small questions over the cached transcript.
-    var askModel: ClaudeModelOption
+    var claudeModel: AIModel
+    /// "Ask the lecture": many small questions over the cached transcript (also while recording).
+    var askModel: AIModel
     /// Context-aware translation pass after the lecture.
-    var refineModel: ClaudeModelOption
+    var refineModel: AIModel
     var summaryLanguage: String
+    /// Answers to questions in both Arabic and English.
+    var bilingualAnswers: Bool
     var keepScreenOn: Bool
     /// Course terms that bias recognition (one per line in Settings).
     var vocabulary: [String]
@@ -59,7 +62,8 @@ struct AppSettings {
             SettingsKey.claudeModel: ClaudeModelOption.sonnet.rawValue,
             SettingsKey.askModel: ClaudeModelOption.haiku.rawValue,
             SettingsKey.refineModel: ClaudeModelOption.haiku.rawValue,
-            SettingsKey.summaryLanguage: "ar",
+            SettingsKey.summaryLanguage: "en",
+            SettingsKey.bilingualAnswers: true,
             SettingsKey.keepScreenOn: true,
             SettingsKey.vocabulary: "",
             SettingsKey.glossary: "",
@@ -73,8 +77,8 @@ struct AppSettings {
 
     static var current: AppSettings {
         let defaults = UserDefaults.standard
-        func model(_ key: String, _ fallback: ClaudeModelOption) -> ClaudeModelOption {
-            ClaudeModelOption(rawValue: defaults.string(forKey: key) ?? "") ?? fallback
+        func model(_ key: String, _ fallback: ClaudeModelOption) -> AIModel {
+            AIModel(rawValue: defaults.string(forKey: key) ?? "") ?? .claude(fallback)
         }
         return AppSettings(
             sourceLanguage: defaults.string(forKey: SettingsKey.sourceLanguage) ?? "en-US",
@@ -84,7 +88,8 @@ struct AppSettings {
             claudeModel: model(SettingsKey.claudeModel, .sonnet),
             askModel: model(SettingsKey.askModel, .haiku),
             refineModel: model(SettingsKey.refineModel, .haiku),
-            summaryLanguage: defaults.string(forKey: SettingsKey.summaryLanguage) ?? "ar",
+            summaryLanguage: defaults.string(forKey: SettingsKey.summaryLanguage) ?? "en",
+            bilingualAnswers: defaults.bool(forKey: SettingsKey.bilingualAnswers),
             keepScreenOn: defaults.bool(forKey: SettingsKey.keepScreenOn),
             vocabulary: lines(defaults.string(forKey: SettingsKey.vocabulary)),
             glossary: lines(defaults.string(forKey: SettingsKey.glossary)).compactMap { line in
@@ -117,7 +122,7 @@ enum Languages {
     static let lecture: [LanguageOption] = [
         .init(id: "en-US", name: "English (US)"),
         .init(id: "en-GB", name: "English (UK)"),
-        .init(id: "ar-SA", name: "العربية"),
+        .init(id: "ar-SA", name: "Arabic"),
         .init(id: "fr-FR", name: "Français"),
         .init(id: "de-DE", name: "Deutsch"),
         .init(id: "es-ES", name: "Español"),
@@ -130,7 +135,7 @@ enum Languages {
     ]
 
     static let translation: [LanguageOption] = [
-        .init(id: "ar", name: "العربية"),
+        .init(id: "ar", name: "Arabic"),
         .init(id: "en", name: "English"),
         .init(id: "fr", name: "Français"),
         .init(id: "de", name: "Deutsch"),
@@ -140,7 +145,7 @@ enum Languages {
 
     static func name(for id: String) -> String {
         if let match = (lecture + translation).first(where: { $0.id == id }) { return match.name }
-        return Locale(identifier: "ar").localizedString(forIdentifier: id) ?? id
+        return Locale(identifier: "en").localizedString(forIdentifier: id) ?? id
     }
 
     /// English name, used inside prompts.
@@ -175,9 +180,9 @@ enum ClaudeModelOption: String, CaseIterable, Identifiable {
     /// Input / output price per million tokens (Claude API pricing, Oct 2026).
     var priceNote: String {
         switch self {
-        case .opus: "4 $ / 20 $ لكل مليون token"
-        case .sonnet: "2 $ / 10 $ لكل مليون token"
-        case .haiku: "0.10 $ / 0.50 $ لكل مليون token (حتى 100 ألف token)"
+        case .opus: "$4 / $20 per million tokens"
+        case .sonnet: "$2 / $10 per million tokens"
+        case .haiku: "$0.10 / $0.50 per million tokens (up to 100K tokens)"
         }
     }
 

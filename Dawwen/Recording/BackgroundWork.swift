@@ -37,16 +37,16 @@ final class BackgroundWork {
     func start(lectureID: UUID, title: String, work: @escaping @MainActor (_ progress: @escaping ProgressHandler) async throws -> String) {
         guard tasks[lectureID] == nil else { return }
         running.insert(lectureID)
-        status[lectureID] = "يبدأ…"
+        status[lectureID] = "Starting…"
         tasks[lectureID] = Task { [weak self] in
             guard let self else { return }
             let result: String
             do {
                 result = try await work { fraction, message in self.report(lectureID, fraction, message) }
             } catch is CancellationError {
-                result = "أُلغيت العملية."
+                result = "Cancelled."
             } catch {
-                result = "تعذّر الإكمال: \(error.localizedDescription)"
+                result = "Couldn't finish: \(error.localizedDescription)"
             }
             self.finish(lectureID, message: result, success: !Task.isCancelled)
         }
@@ -66,7 +66,7 @@ final class BackgroundWork {
     private func submitSystemTask(title: String) {
         guard registered, systemTask == nil else { return }
         let request = BGContinuedProcessingTaskRequest(
-            identifier: Self.taskIdentifier, title: title, subtitle: "يكمل حتى إن غادرت التطبيق"
+            identifier: Self.taskIdentifier, title: title, subtitle: "Continues even if you leave the app"
         )
         request.strategy = .fail // run now or not at all; the work continues in the foreground anyway
         do {

@@ -18,25 +18,59 @@ final class AskSession {
 
     var isBusy: Bool { entries.last?.isStreaming == true }
 
-    func ask(_ question: String, about lecture: Lecture) {
-        var entry = Entry(question: question)
+    /// `label` is what the history shows instead of `question` (a skill's name).
+    func ask(_ question: String, label: String? = nil, about lecture: Lecture) {
         let settings = AppSettings.current
-        // Haiku by default: a question re-reads the cached transcript for a fraction of a cent.
-        guard let client = ClaudeClient.current(model: settings.askModel) else {
-            entry.error = ClaudeClient.ClaudeError.missingKey.localizedDescription
-            entry.isStreaming = false
-            entries.append(entry)
-            return
-        }
         // Same preamble and transcript as the summary request, so the cached system prefix is reused
         // (the cache is per model: summary and questions share it only when they use the same model).
         let request = ClaudeClient.Request(
             preamble: LecturePrompt.preamble(for: lecture),
             context: LecturePrompt.transcript(for: lecture),
-            userMessage: LecturePrompt.questionRequest(question, outputLanguage: settings.summaryLanguage),
+            userMessage: LecturePrompt.questionRequest(question, outputLanguage: settings.summaryLanguage,
+                                                       bilingual: settings.bilingualAnswers, history: Self.history(of: lecture)),
             effort: "medium",
             maxTokens: 16_000
         )
+        send(label ?? question, request: request, about: lecture)
+    }
+
+    /// While recording, over the transcript so far. A nil question answers the question the lecturer
+    /// just asked the class.
+    func askLive(_ question: String?, label: String? = nil, about lecture: Lecture, recording: RecordingController) {
+        let settings = AppSettings.current
+        let userMessage = question.map {
+            LecturePrompt.questionRequest($0, outputLanguage: settings.summaryLanguage, bilingual: settings.bilingualAnswers,
+                                          live: true, history: Self.history(of: lecture))
+        } ?? LecturePrompt.lecturerQuestionRequest(lectureLanguage: lecture.sourceLanguage, outputLanguage: settings.summaryLanguage)
+        let request = ClaudeClient.Request(
+            preamble: LecturePrompt.livePreamble(for: lecture, elapsed: recording.elapsed),
+            context: LecturePrompt.liveTranscript(recording.liveSegments, partial: recording.partialText),
+            userMessage: userMessage,
+            effort: "low",  // the student is waiting in class
+            maxTokens: 8_000
+        )
+        send(label ?? question ?? "The lecturer's question at \(TimeFormat.clock(recording.elapsed))",
+             request: request, about: lecture)
+    }
+
+    /// The last few answered questions, so a follow-up or a quiz answer has its context.
+    private static func history(of lecture: Lecture) -> [LecturePrompt.Exchange] {
+        lecture.questions
+            .sorted { $0.createdAt < $1.createdAt }
+            .suffix(4)
+            .map { LecturePrompt.Exchange(question: $0.question, answer: $0.answer) }
+    }
+
+    private func send(_ question: String, request: ClaudeClient.Request, about lecture: Lecture) {
+        var entry = Entry(question: question)
+        let model = AppSettings.current.askModel.resolved()
+        // Haiku by default: a question re-reads the cached transcript for a fraction of a cent.
+        guard let client = model.client() else {
+            entry.error = model.missingKeyError.localizedDescription
+            entry.isStreaming = false
+            entries.append(entry)
+            return
+        }
         entries.append(entry)
         let id = entry.id
         Task {
@@ -73,13 +107,22 @@ final class AskSession {
 struct AskView: View {
     let lecture: Lecture
     let session: AskSession
+    /// While recording: questions go over the transcript so far, and one button answers the
+    /// question the lecturer just asked.
+    var recording: RecordingController?
 
     @State private var question = ""
-    private let examples = [
-        "ما أهم ثلاث أفكار في هذه المحاضرة؟",
-        "اشرح أصعب مفهوم ورد فيها بمثال بسيط.",
-        "هل ذكر المحاضر شيئاً عن الامتحان أو الواجبات؟"
-    ]
+    private var examples: [String] {
+        recording == nil ? [
+            "What are the three most important ideas in this lecture?",
+            "Explain the hardest concept in it with a simple example.",
+            "Did the lecturer mention anything about the exam or assignments?"
+        ] : [
+            "What did I miss in the last five minutes?",
+            "Explain what the lecturer is talking about right now, simply.",
+            "Summarize the lecture so far in five points."
+        ]
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -90,7 +133,7 @@ struct AskView: View {
                             SavedQuestionView(entry: saved)
                         }
                         if session.entries.isEmpty && lecture.questions.isEmpty {
-                            Text("اسأل عن أي شيء قيل في المحاضرة؛ الإجابة تذكر الطوابع الزمنية.")
+                            Text("Ask about anything said in the lecture; answers cite timestamps.")
                                 .foregroundStyle(.secondary)
                             ForEach(examples, id: \.self) { example in
                                 Button(example) { send(example) }
@@ -124,8 +167,36 @@ struct AskView: View {
                 }
             }
             Divider()
+            if let recording {
+                Button {
+                    session.askLive(nil, about: lecture, recording: recording)
+                } label: {
+                    Label("Answer the lecturer's question", systemImage: "hand.raised.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(session.isBusy)
+                .padding([.horizontal, .top])
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(AskSkill.all) { skill in
+                        Button {
+                            send(skill.instruction, label: skill.title)
+                        } label: {
+                            Label(skill.title, systemImage: skill.icon)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                }
+                .padding(.horizontal)
+            }
+            .padding(.top, 10)
+            .disabled(session.isBusy)
             HStack(alignment: .bottom, spacing: 10) {
-                TextField("اسأل عن المحاضرة…", text: $question, axis: .vertical)
+                TextField("Ask about the lecture… / اسأل عن المحاضرة…", text: $question, axis: .vertical)
                     .lineLimit(1...4)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { send(question) }
@@ -134,7 +205,7 @@ struct AskView: View {
                 } label: {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.system(size: 30))
-                        .accessibilityLabel("إرسال")
+                        .accessibilityLabel("Send")
                 }
                 .disabled(question.trimmingCharacters(in: .whitespaces).isEmpty || session.isBusy)
             }
@@ -142,12 +213,54 @@ struct AskView: View {
         }
     }
 
-    private func send(_ text: String) {
+    /// `label`: a skill, shown by its name and leaving whatever is typed in the field.
+    private func send(_ text: String, label: String? = nil) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !session.isBusy else { return }
-        session.ask(trimmed, about: lecture)
-        question = ""
+        if let recording {
+            session.askLive(trimmed, label: label, about: lecture, recording: recording)
+        } else {
+            session.ask(trimmed, label: label, about: lecture)
+        }
+        if label == nil { question = "" }
     }
+}
+
+/// Ready-made requests that steer how the tutor answers. They work on the conversation so far, so
+/// "Explain simply" after an answer re-explains that answer.
+struct AskSkill: Identifiable {
+    let title: String
+    let icon: String
+    let instruction: String
+
+    var id: String { title }
+
+    static let all: [AskSkill] = [
+        AskSkill(
+            title: "Explain simply · اشرح ببساطة", icon: "lightbulb",
+            instruction: "Explain the last thing we discussed (or, if we haven't discussed anything yet, the main idea of the lecture so far) more simply, step by step, with an everyday analogy."
+        ),
+        AskSkill(
+            title: "Example · مثال", icon: "list.number",
+            instruction: "Give me a worked example of the last concept we discussed, step by step: the lecturer's example first if there is one, then one of your own."
+        ),
+        AskSkill(
+            title: "Quiz me · اختبرني", icon: "questionmark.bubble",
+            instruction: "Quiz me: ask me one question that tests whether I understood the last thing we discussed, or the lecture so far, focusing on what is most likely to come up in an exam. Ask only the question and wait for my answer; don't give the answer yet."
+        ),
+        AskSkill(
+            title: "Go deeper · تعمّق", icon: "arrow.down.circle",
+            instruction: "Go deeper into the last topic we discussed: the details, why it works, edge cases, and how it connects to the rest of the lecture."
+        ),
+        AskSkill(
+            title: "Short version · باختصار", icon: "text.alignleft",
+            instruction: "Give me the short version of your last answer, or of the lecture so far if there is none: three bullet points at most."
+        ),
+        AskSkill(
+            title: "Key terms · المصطلحات", icon: "character.book.closed",
+            instruction: "List the key terms from the lecture so far, each with a one-line definition as the lecturer explained it and its timestamp."
+        )
+    ]
 }
 
 /// A question answered earlier, shown from the lecture's saved history.

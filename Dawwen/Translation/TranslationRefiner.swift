@@ -14,6 +14,14 @@ enum TranslationRefiner {
     static let chunkSize = 50
     static let contextLines = 4
 
+    enum RefineError: LocalizedError {
+        case batchNeedsClaude
+
+        var errorDescription: String? {
+            "Half-price Batch works with Claude only. Pick a Claude refinement model, or the \"Now, from the iPad\" method for a free model."
+        }
+    }
+
     struct Chunk: Sendable {
         let customID: String
         let userMessage: String
@@ -88,9 +96,8 @@ enum TranslationRefiner {
 
     static func refineNow(_ lecture: Lecture, context: ModelContext, progress: @escaping BackgroundWork.ProgressHandler) async throws -> Int {
         let target = lecture.targetLanguage ?? AppSettings.current.targetLanguage
-        guard let client = ClaudeClient.current(model: AppSettings.current.refineModel) else {
-            throw ClaudeClient.ClaudeError.missingKey
-        }
+        let model = AppSettings.current.refineModel.resolved()
+        guard let client = model.client() else { throw model.missingKeyError }
         let preamble = instructions(source: lecture.sourceLanguage, target: target)
         let glossary = glossaryText()
         let requests = chunks(for: lecture).map {
@@ -110,7 +117,7 @@ enum TranslationRefiner {
             while let json = try await group.next() {
                 changed += apply(json, to: lecture)
                 done += 1
-                progress(Double(done) / Double(requests.count), "تحسين الترجمة: \(done) من \(requests.count)")
+                progress(Double(done) / Double(requests.count), "Refining translation: \(done) of \(requests.count)")
                 try context.save()
                 if next < requests.count {
                     let request = requests[next]
@@ -130,8 +137,13 @@ enum TranslationRefiner {
 
     static func submit(_ lecture: Lecture, server: ServerClient, engine: String) async throws {
         let target = lecture.targetLanguage ?? AppSettings.current.targetLanguage
+        // The home worker uses its own local model; Batch needs a Claude one.
+        let claudeModel = AppSettings.current.refineModel.claude
+        if engine == "claude-batch", claudeModel == nil {
+            throw RefineError.batchNeedsClaude
+        }
         let payload = ServerClient.RefinePayload(
-            model: AppSettings.current.refineModel.rawValue,
+            model: (claudeModel ?? .haiku).rawValue,
             preamble: instructions(source: lecture.sourceLanguage, target: target),
             context: glossaryText(),
             effort: "low",

@@ -25,3 +25,7 @@ __pycache__/
 .pytest_cache/
 *.pyc
 .venv/
+
+# API keys (never commit)
+.env
+*.env

@@ -1,4 +1,0 @@
-/* Arabic is the app's only localization, so iOS lays the whole interface out right to left. */
-"CFBundleDisplayName" = "دوّن";
-"NSMicrophoneUsageDescription" = "يسجّل «دوّن» صوت المحاضرة ليحفظه ويفرّغه إلى نص.";
-"NSSpeechRecognitionUsageDescription" = "يفرّغ «دوّن» الكلام إلى نص على جهازك.";

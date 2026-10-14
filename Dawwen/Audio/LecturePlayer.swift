@@ -142,8 +142,8 @@ final class LecturePlayer {
     private func updateNowPlaying() {
         guard isReady else { return }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = [
-            MPMediaItemPropertyTitle: title.isEmpty ? "محاضرة" : title,
-            MPMediaItemPropertyArtist: "دوّن",
+            MPMediaItemPropertyTitle: title.isEmpty ? "Lecture" : title,
+            MPMediaItemPropertyArtist: "Dawwen",
             MPMediaItemPropertyPlaybackDuration: duration,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: currentTime,
             MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? Double(rate) : 0.0

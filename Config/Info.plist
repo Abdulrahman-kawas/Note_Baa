@@ -15,7 +15,7 @@
 	<key>CFBundleAllowMixedLocalizations</key>
 	<false/>
 	<key>NSCameraUsageDescription</key>
-	<string>يلتقط «دوّن» نص الشرائح والسبورة ليضيفه إلى المحاضرة.</string>
+	<string>Dawwen reads the text on slides and the whiteboard to add it to the lecture.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 </dict>

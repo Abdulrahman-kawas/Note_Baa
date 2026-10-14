@@ -16,7 +16,7 @@ final class SegmentedRecorder: @unchecked Sendable {
 
     enum RecorderError: LocalizedError {
         case noMicrophone
-        var errorDescription: String? { "لا يوجد مايكروفون متاح." }
+        var errorDescription: String? { "No microphone is available." }
     }
 
     struct Meter: Sendable {
@@ -138,7 +138,7 @@ final class SegmentedRecorder: @unchecked Sendable {
         do {
             try installTapAndStart()
         } catch {
-            failureHandler?("تعذّرت إعادة تشغيل المايكروفون بعد تغيّر الإعداد: \(error.localizedDescription)")
+            failureHandler?("Couldn't restart the microphone after the setup changed: \(error.localizedDescription)")
         }
     }
 
@@ -179,7 +179,7 @@ final class SegmentedRecorder: @unchecked Sendable {
         if let closed { partClosedHandler?(closed) }
         if let opened { partOpenedHandler?(opened) }
         if let failure, shouldReport() {
-            failureHandler?("خطأ في حفظ الصوت: \(failure.localizedDescription)")
+            failureHandler?("Error saving audio: \(failure.localizedDescription)")
         }
     }
 

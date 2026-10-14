@@ -15,6 +15,9 @@ struct DawwenApp: App {
 
     init() {
         AppSettings.registerDefaults()
+        #if DEBUG
+        FreeLLM.importBundledEnv()
+        #endif
         LectureStore.migrateLegacyFolderIfNeeded()
         LectureExporter.cleanTemporaryExports()
         do {
@@ -51,7 +54,6 @@ struct DawwenApp: App {
                     DatabaseRecoveryView(message: message)
                 }
             }
-            .environment(\.layoutDirection, .rightToLeft)
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active {
                     Task { await BackupUploader.shared.enqueuePending() }

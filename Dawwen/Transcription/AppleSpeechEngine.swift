@@ -91,7 +91,7 @@ final class AppleSpeechEngine: LiveTranscriber, @unchecked Sendable {
         // A request comes back even when the model is installed; it then finishes at once.
         guard let request = try await AssetInventory.assetInstallationRequest(supporting: [module]) else { return }
         if current != .installed {
-            status("تجهيز نموذج اللغة على الجهاز (يُنزَّل أول مرة فقط)…")
+            status("Preparing the on-device language model (downloaded the first time only)…")
         }
         try await request.downloadAndInstall()
     }

@@ -14,14 +14,14 @@ enum OnDeviceSummarizer {
             break
         case .unavailable(let reason):
             switch reason {
-            case .deviceNotEligible: return "هذا الآيباد لا يدعم Apple Intelligence (يلزم شريحة M1 أو أحدث)."
-            case .appleIntelligenceNotEnabled: return "فعّل Apple Intelligence من الإعدادات."
-            case .modelNotReady: return "نموذج Apple Intelligence لم يكتمل تنزيله بعد."
-            @unknown default: return "Apple Intelligence غير متاح."
+            case .deviceNotEligible: return "This iPad doesn't support Apple Intelligence (it needs an M1 chip or newer)."
+            case .appleIntelligenceNotEnabled: return "Turn on Apple Intelligence in Settings."
+            case .modelNotReady: return "The Apple Intelligence model hasn't finished downloading yet."
+            @unknown default: return "Apple Intelligence isn't available."
             }
         }
         guard model.supportsLocale(Locale(identifier: lectureLanguage)) else {
-            return "Apple Intelligence لا يدعم لغة هذه المحاضرة؛ استخدم Claude."
+            return "Apple Intelligence doesn't support this lecture's language; use Claude."
         }
         return nil
     }
@@ -56,13 +56,13 @@ enum OnDeviceSummarizer {
         let chunks = group(paragraphs, maxCharacters: chunkCharacters)
         var notes: [String] = []
         for (index, chunk) in chunks.enumerated() {
-            await progress("Apple Intelligence: الجزء \(index + 1) من \(chunks.count)")
+            await progress("Apple Intelligence: part \(index + 1) of \(chunks.count)")
             notes.append(try await respond(instructions: partInstructions, text: chunk, maxTokens: 400))
         }
 
         var level = notes
         while level.count > 1, level.joined(separator: "\n").count > chunkCharacters {
-            await progress("Apple Intelligence: دمج الملاحظات…")
+            await progress("Apple Intelligence: merging notes…")
             var merged: [String] = []
             for group in group(level, maxCharacters: chunkCharacters) {
                 merged.append(try await respond(instructions: mergeInstructions, text: group, maxTokens: 500))
@@ -70,7 +70,7 @@ enum OnDeviceSummarizer {
             level = merged
         }
 
-        await progress("Apple Intelligence: كتابة الملخص النهائي…")
+        await progress("Apple Intelligence: writing the final summary…")
         return try await respond(instructions: finalInstructions, text: level.joined(separator: "\n\n"), maxTokens: 900)
     }
 

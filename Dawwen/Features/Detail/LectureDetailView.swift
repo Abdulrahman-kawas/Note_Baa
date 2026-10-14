@@ -27,17 +27,17 @@ struct LectureDetailView: View {
         var id: String { rawValue }
         var title: String {
             switch self {
-            case .transcript: "النص"
-            case .summary: "الملخص"
-            case .ask: "اسأل"
-            case .bookmarks: "العلامات"
+            case .transcript: "Transcript"
+            case .summary: "Summary"
+            case .ask: "Ask"
+            case .bookmarks: "Bookmarks"
             }
         }
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("القسم", selection: $tab) {
+            Picker("Section", selection: $tab) {
                 ForEach(DetailTab.allCases) { Text($0.title).tag($0) }
             }
             .pickerStyle(.segmented)
@@ -84,22 +84,22 @@ struct LectureDetailView: View {
         .translationTask(translationConfiguration) { session in
             await translationQueue.run(with: session)
         }
-        .confirmationDialog("استبدال النص كاملاً؟", isPresented: $confirmRetranscribe, titleVisibility: .visible) {
-            Button("فرّغ الصوت كله من جديد واحذف النص الحالي", role: .destructive) { retranscribeEverything() }
-            Button("إلغاء", role: .cancel) {}
+        .confirmationDialog("Replace the whole transcript?", isPresented: $confirmRetranscribe, titleVisibility: .visible) {
+            Button("Re-transcribe all the audio and delete the current transcript", role: .destructive) { retranscribeEverything() }
+            Button("Cancel", role: .cancel) {}
         } message: {
-            Text("يحذف كل الجمل وترجماتها وأسماء المتحدثين ويستبدلها بتفريغ Apple على الجهاز. لإكمال الأجزاء الناقصة فقط استخدم «أكمل النص الناقص».")
+            Text("Deletes every sentence, its translation and speaker names, and replaces them with a new on-device Apple transcription. To fill in only the missing parts, use “Fill in missing transcript”.")
         }
-        .alert("إعادة تسمية المحاضرة", isPresented: $showRename) {
-            TextField("العنوان", text: $draftTitle)
-            Button("حفظ") {
+        .alert("Rename lecture", isPresented: $showRename) {
+            TextField("Title", text: $draftTitle)
+            Button("Save") {
                 let trimmed = draftTitle.trimmingCharacters(in: .whitespaces)
                 if !trimmed.isEmpty {
                     lecture.title = trimmed
                     try? context.save()
                 }
             }
-            Button("إلغاء", role: .cancel) {}
+            Button("Cancel", role: .cancel) {}
         }
     }
 
@@ -117,15 +117,15 @@ struct LectureDetailView: View {
                 Text(message).foregroundStyle(.blue)
             } else if translationQueue.pendingCount > 0 {
                 Text("·")
-                Text("بانتظار الترجمة: \(translationQueue.pendingCount)").foregroundStyle(.blue)
+                Text("Waiting for translation: \(translationQueue.pendingCount)").foregroundStyle(.blue)
             }
             if translationQueue.failedCount > 0 {
                 Text("·")
-                Text("تعذّرت ترجمة \(translationQueue.failedCount)").foregroundStyle(.orange)
+                Text("Couldn't translate \(translationQueue.failedCount)").foregroundStyle(.orange)
             }
             if lecture.refineJobID != nil {
                 Text("·")
-                Label("تحسين الترجمة على الخادم", systemImage: "clock").foregroundStyle(.secondary)
+                Label("Translation refinement on the server", systemImage: "clock").foregroundStyle(.secondary)
             }
             Spacer()
         }
@@ -138,10 +138,10 @@ struct LectureDetailView: View {
     private var incompleteBanner: some View {
         HStack {
             let seconds = lecture.untranscribedSeconds
-            Label(seconds > 0 ? "\(TimeFormat.duration(seconds)) من الصوت دون نص." : "جزء من الصوت لم يُفرَّغ بعد.",
+            Label(seconds > 0 ? "\(TimeFormat.duration(seconds)) of audio has no transcript." : "Part of the audio isn't transcribed yet.",
                   systemImage: "exclamationmark.bubble")
             Spacer()
-            Button("أكمل النص الناقص") { fillGaps() }
+            Button("Fill in missing transcript") { fillGaps() }
                 .buttonStyle(.bordered)
         }
         .font(.footnote)
@@ -154,7 +154,7 @@ struct LectureDetailView: View {
     private var toolbar: some ToolbarContent {
         ToolbarItem {
             Toggle(isOn: $showTranslation) {
-                Label("إظهار الترجمة", systemImage: "character.bubble")
+                Label("Show translation", systemImage: "character.bubble")
             }
         }
         ToolbarItem {
@@ -167,7 +167,7 @@ struct LectureDetailView: View {
                     }
                 }
             } label: {
-                Label("تصدير", systemImage: "square.and.arrow.up")
+                Label("Export", systemImage: "square.and.arrow.up")
             }
         }
         ToolbarItem {
@@ -175,43 +175,43 @@ struct LectureDetailView: View {
                 Picker(selection: $lecture.sourceLanguage) {
                     ForEach(Languages.lecture) { Text($0.name).tag($0.id) }
                 } label: {
-                    Label("لغة المحاضرة", systemImage: "globe")
+                    Label("Lecture language", systemImage: "globe")
                 }
                 .pickerStyle(.menu)
                 Button {
                     Task { await translateMissing(automatic: false) }
                 } label: {
-                    Label("ترجمة الجمل غير المترجمة", systemImage: "translate")
+                    Label("Translate untranslated sentences", systemImage: "translate")
                 }
                 Button {
                     refineTranslation()
                 } label: {
-                    Label("حسّن الترجمة بالسياق والمسرد (Claude)", systemImage: "wand.and.stars")
+                    Label("Refine translation with context and glossary (Claude)", systemImage: "wand.and.stars")
                 }
                 .disabled(isWorking || lecture.segments.isEmpty)
                 Button {
                     fillGaps()
                 } label: {
-                    Label("أكمل النص الناقص من الصوت", systemImage: "text.badge.plus")
+                    Label("Fill in missing transcript from audio", systemImage: "text.badge.plus")
                 }
                 .disabled(isWorking)
                 Button(role: .destructive) {
                     lecture.segments.isEmpty ? retranscribeEverything() : (confirmRetranscribe = true)
                 } label: {
-                    Label("استبدال النص كاملاً بتفريغ جديد", systemImage: "waveform.badge.magnifyingglass")
+                    Label("Replace the whole transcript with a new transcription", systemImage: "waveform.badge.magnifyingglass")
                 }
                 .disabled(isWorking)
                 if isWorking {
-                    Button("إيقاف العملية الجارية", role: .cancel) { work.cancel(lectureID: lecture.id) }
+                    Button("Stop the running task", role: .cancel) { work.cancel(lectureID: lecture.id) }
                 }
                 Button {
                     draftTitle = lecture.title
                     showRename = true
                 } label: {
-                    Label("إعادة التسمية", systemImage: "pencil")
+                    Label("Rename", systemImage: "pencil")
                 }
             } label: {
-                Label("المزيد", systemImage: "ellipsis.circle")
+                Label("More", systemImage: "ellipsis.circle")
             }
         }
     }
@@ -222,13 +222,13 @@ struct LectureDetailView: View {
     private func translateMissing(automatic: Bool) async {
         let target = lecture.targetLanguage ?? AppSettings.current.targetLanguage
         guard Languages.code(target) != Languages.code(lecture.sourceLanguage) else {
-            if !automatic { status = "لغة الترجمة هي نفس لغة المحاضرة." }
+            if !automatic { status = "The translation language is the same as the lecture language." }
             return
         }
         if automatic && lecture.targetLanguage == nil { return }
         let missing = lecture.sortedSegments.filter { $0.translation == nil }
         guard !missing.isEmpty else {
-            if !automatic { status = "كل الجمل مترجمة." }
+            if !automatic { status = "Every sentence is translated." }
             return
         }
         lecture.targetLanguage = target
@@ -265,16 +265,16 @@ struct LectureDetailView: View {
                 do {
                     try await TranslationRefiner.submit(lecture, server: server, engine: settings.refineEngine)
                     try? context.save()
-                    status = "أُرسل تحسين الترجمة إلى الخادم؛ يكتمل خلال ساعة تقريباً."
+                    status = "Translation refinement sent to the server; it finishes in about an hour."
                 } catch {
                     status = error.localizedDescription
                 }
             }
             return
         }
-        work.start(lectureID: lecture.id, title: "تحسين ترجمة «\(lecture.title)»") { progress in
+        work.start(lectureID: lecture.id, title: "Refining translation of “\(lecture.title)”") { progress in
             let changed = try await TranslationRefiner.refineNow(lecture, context: context, progress: progress)
-            return "حُسّنت ترجمة \(changed) جملة."
+            return "Refined the translation of \(changed) sentences."
         }
     }
 
@@ -282,7 +282,7 @@ struct LectureDetailView: View {
         guard lecture.refineJobID != nil, let server = ServerClient.current else { return }
         if (try? await TranslationRefiner.collect(lecture, server: server, context: context)) == true,
            lecture.translationRefinedAt != nil {
-            status = "وصلت الترجمة المحسّنة."
+            status = "The refined translation has arrived."
         }
     }
 
@@ -291,9 +291,9 @@ struct LectureDetailView: View {
     private func fillGaps() {
         let lecture = lecture
         let context = context
-        work.start(lectureID: lecture.id, title: "إكمال نص «\(lecture.title)»") { progress in
+        work.start(lectureID: lecture.id, title: "Filling in transcript of “\(lecture.title)”") { progress in
             let added = try await GapFiller.fill(lecture, context: context, progress: progress)
-            return added == 0 ? "لا جمل جديدة في الأجزاء الناقصة." : "أُضيفت \(added) جملة من الصوت."
+            return added == 0 ? "No new sentences in the missing parts." : "Added \(added) sentences from the audio."
         }
     }
 
@@ -301,7 +301,7 @@ struct LectureDetailView: View {
     private func retranscribeEverything() {
         let lecture = lecture
         let context = context
-        work.start(lectureID: lecture.id, title: "تفريغ «\(lecture.title)» من جديد") { progress in
+        work.start(lectureID: lecture.id, title: "Re-transcribing “\(lecture.title)”") { progress in
             let urls = LectureStore.audioURLs(for: lecture)
             let segments = try await FileTranscriber.transcribe(
                 urls: urls, language: lecture.sourceLanguage, vocabulary: AppSettings.current.vocabulary
@@ -319,19 +319,19 @@ struct LectureDetailView: View {
             lecture.transcriptionIncomplete = false
             try context.save()
             try? LectureArchive.write(lecture)
-            return "اكتمل التفريغ: \(segments.count) جملة"
+            return "Transcription complete: \(segments.count) sentences"
         }
     }
 
     private func export(_ format: LectureExporter.Format) {
         Task {
-            status = "تجهيز الملف…"
+            status = "Preparing the file…"
             do {
                 let url = try await LectureExporter.export(lecture, as: format)
                 status = nil
                 SharePresenter.share([url])
             } catch {
-                status = "تعذّر التصدير: \(error.localizedDescription)"
+                status = "Export failed: \(error.localizedDescription)"
             }
         }
     }

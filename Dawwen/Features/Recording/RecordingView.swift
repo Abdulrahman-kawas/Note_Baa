@@ -13,6 +13,8 @@ struct RecordingView: View {
     @State private var followLive = true
     @State private var lectureMode = false
     @State private var showSlideCapture = false
+    @State private var showAsk = false
+    @State private var askSession = AskSession()
 
     var body: some View {
         NavigationStack {
@@ -38,7 +40,7 @@ struct RecordingView: View {
                     Button {
                         lectureMode = true
                     } label: {
-                        Label("وضع المحاضرة", systemImage: "moon.fill")
+                        Label("Lecture mode", systemImage: "moon.fill")
                     }
                 }
             }
@@ -52,6 +54,23 @@ struct RecordingView: View {
             .sheet(isPresented: $showSlideCapture) {
                 SlideCaptureView { controller.addSlideText($0) }
             }
+            .sheet(isPresented: $showAsk) {
+                if let lecture = controller.lecture {
+                    // Half height: the live transcript stays visible above it, and recording goes on.
+                    NavigationStack {
+                        AskView(lecture: lecture, session: askSession, recording: controller)
+                            .navigationTitle("Ask about the lecture so far")
+                            .navigationBarTitleDisplayMode(.inline)
+                            .toolbar {
+                                ToolbarItem(placement: .confirmationAction) {
+                                    Button("Done") { showAsk = false }
+                                }
+                            }
+                    }
+                    .presentationDetents([.medium, .large])
+                    .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+                }
+            }
         }
         .translationTask(controller.translationConfiguration) { session in
             await controller.translationQueue.run(with: session)
@@ -61,13 +80,13 @@ struct RecordingView: View {
         }
         .interactiveDismissDisabled(controller.isActive)
         .onDisappear { controller.dismantle() }
-        .confirmationDialog("إنهاء التسجيل؟", isPresented: $confirmStop, titleVisibility: .visible) {
-            Button("إنهاء وحفظ", role: .destructive) {
+        .confirmationDialog("End the recording?", isPresented: $confirmStop, titleVisibility: .visible) {
+            Button("End and save", role: .destructive) {
                 Task { await controller.stop() }
             }
-            Button("متابعة التسجيل", role: .cancel) {}
+            Button("Keep recording", role: .cancel) {}
         } message: {
-            Text("يُحفظ الصوت والنص، ويمكنك التلخيص بعدها.")
+            Text("The audio and transcript are saved, and you can summarize afterwards.")
         }
     }
 
@@ -81,8 +100,8 @@ struct RecordingView: View {
             .overlay {
                 VStack(spacing: 12) {
                     Image(systemName: "moon.fill")
-                    Text("وضع المحاضرة: التسجيل مستمر")
-                    Text("اضغط في أي مكان للعودة")
+                    Text("Lecture mode: recording continues")
+                    Text("Tap anywhere to return")
                         .font(.footnote)
                 }
                 .foregroundStyle(.secondary)
@@ -107,15 +126,15 @@ struct RecordingView: View {
                 }
                 if controller.translationQueue.pendingCount > 0 {
                     Text("·")
-                    Text("بانتظار الترجمة: \(controller.translationQueue.pendingCount)")
+                    Text("Waiting for translation: \(controller.translationQueue.pendingCount)")
                 }
                 if controller.translationQueue.failedCount > 0 {
                     Text("·")
-                    Text("تعذّرت ترجمة \(controller.translationQueue.failedCount)").foregroundStyle(.orange)
+                    Text("Couldn't translate \(controller.translationQueue.failedCount)").foregroundStyle(.orange)
                 }
                 if controller.gapSeconds >= 5 {
                     Text("·")
-                    Text("دون نص: \(TimeFormat.clock(controller.gapSeconds))").foregroundStyle(.orange)
+                    Text("No transcript: \(TimeFormat.clock(controller.gapSeconds))").foregroundStyle(.orange)
                 }
             }
             .font(.footnote)
@@ -129,7 +148,7 @@ struct RecordingView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
                     if controller.liveSegments.isEmpty && controller.partialText.isEmpty {
-                        Text(controller.phase == .recording ? "النص يظهر هنا أثناء الكلام…" : "")
+                        Text(controller.phase == .recording ? "The transcript appears here as people speak…" : "")
                             .foregroundStyle(.tertiary)
                             .frame(maxWidth: .infinity)
                             .padding(.top, 40)
@@ -156,7 +175,7 @@ struct RecordingView: View {
             .safeAreaInset(edge: .top) {
                 HStack {
                     Spacer()
-                    Toggle("متابعة النص", isOn: $followLive)
+                    Toggle("Follow transcript", isOn: $followLive)
                         .toggleStyle(.button)
                         .font(.caption)
                         .padding(8)
@@ -170,7 +189,7 @@ struct RecordingView: View {
             Button {
                 controller.addBookmark()
             } label: {
-                Label("علامة", systemImage: "bookmark.fill")
+                Label("Bookmark", systemImage: "bookmark.fill")
                     .labelStyle(.verticalIcon)
             }
             .disabled(controller.phase != .recording)
@@ -178,24 +197,32 @@ struct RecordingView: View {
             Button {
                 showSlideCapture = true
             } label: {
-                Label("شريحة", systemImage: "camera.viewfinder")
+                Label("Slide", systemImage: "camera.viewfinder")
                     .labelStyle(.verticalIcon)
             }
             .disabled(controller.phase != .recording)
+
+            Button {
+                showAsk = true
+            } label: {
+                Label("Ask AI", systemImage: "sparkles")
+                    .labelStyle(.verticalIcon)
+            }
+            .disabled(controller.lecture == nil || !(controller.phase == .recording || isPaused))
 
             Button {
                 if case .paused = controller.phase { controller.resume() } else { controller.pause() }
             } label: {
                 Image(systemName: isPaused ? "play.circle.fill" : "pause.circle.fill")
                     .font(.system(size: 64))
-                    .accessibilityLabel(isPaused ? "استئناف" : "إيقاف مؤقت")
+                    .accessibilityLabel(isPaused ? "Resume" : "Pause")
             }
             .disabled(!(controller.phase == .recording || isPaused))
 
             Button(role: .destructive) {
                 confirmStop = true
             } label: {
-                Label("إنهاء", systemImage: "stop.circle.fill")
+                Label("End", systemImage: "stop.circle.fill")
                     .labelStyle(.verticalIcon)
             }
             .disabled(!(controller.phase == .recording || isPaused))
@@ -211,20 +238,20 @@ struct RecordingView: View {
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 44))
                 .foregroundStyle(.green)
-            Text("اكتمل التسجيل").font(.title2.bold())
-            Text("\(TimeFormat.duration(controller.elapsed)) · \(controller.liveSegments.count) جملة")
+            Text("Recording complete").font(.title2.bold())
+            Text("\(TimeFormat.duration(controller.elapsed)) · \(controller.liveSegments.count) sentences")
                 .foregroundStyle(.secondary)
             if controller.translationQueue.pendingCount > 0 {
-                Label("تُترجم \(controller.translationQueue.pendingCount) جملة الآن؛ ما يتبقى يُترجم تلقائياً عند فتح المحاضرة.", systemImage: "character.bubble")
+                Label("Translating \(controller.translationQueue.pendingCount) sentences now; anything left is translated automatically when you open the lecture.", systemImage: "character.bubble")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
             if controller.gapSeconds >= 5 {
-                Label("\(TimeFormat.duration(controller.gapSeconds)) دون نص لحظي؛ أكملها من صفحة المحاضرة.", systemImage: "text.badge.plus")
+                Label("\(TimeFormat.duration(controller.gapSeconds)) without a live transcript; fill it in from the lecture page.", systemImage: "text.badge.plus")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            Button("فتح المحاضرة") { onFinish(controller.lecture?.id) }
+            Button("Open lecture") { onFinish(controller.lecture?.id) }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
         }
@@ -240,7 +267,7 @@ struct RecordingView: View {
                 .foregroundStyle(.orange)
             Text(message)
                 .multilineTextAlignment(.center)
-            Button("إغلاق") { onFinish(controller.lecture?.id) }
+            Button("Close") { onFinish(controller.lecture?.id) }
                 .buttonStyle(.borderedProminent)
         }
         .padding(28)
@@ -257,13 +284,13 @@ struct RecordingView: View {
 
     private var statusText: String {
         switch controller.phase {
-        case .idle: "جاهز"
+        case .idle: "Ready"
         case .preparing(let message): message
-        case .recording: "يسجّل"
+        case .recording: "Recording"
         case .paused(let message): message
-        case .finishing: "إنهاء التفريغ وحفظ المحاضرة…"
-        case .finished: "انتهى"
-        case .failed: "خطأ"
+        case .finishing: "Finishing transcription and saving the lecture…"
+        case .finished: "Finished"
+        case .failed: "Error"
         }
     }
 

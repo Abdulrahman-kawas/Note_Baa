@@ -83,7 +83,7 @@ final class RecordingController {
     func start(_ request: NewLectureRequest, context: ModelContext) async {
         guard phase == .idle else { return }
         guard Self.activeRecording == nil else {
-            phase = .failed("يوجد تسجيل جارٍ في نافذة أخرى. أنهِه أولاً.")
+            phase = .failed("A recording is already running in another window. Finish it first.")
             return
         }
         Self.activeRecording = ObjectIdentifier(self)
@@ -91,18 +91,18 @@ final class RecordingController {
         let settings = AppSettings.current
         allowBluetooth = settings.allowBluetoothMic
 
-        phase = .preparing("طلب إذن المايكروفون…")
+        phase = .preparing("Requesting microphone permission…")
         guard await AVAudioApplication.requestRecordPermission() else {
-            fail("لم يُسمح باستخدام المايكروفون. فعّله من الإعدادات ← الخصوصية ← المايكروفون.")
+            fail("Microphone access isn't allowed. Turn it on in Settings ▸ Privacy & Security ▸ Microphone.")
             return
         }
         guard phase != .finished, phase != .finishing else { return } // the view went away meanwhile
         if let storage = StorageGuard.status() {
             if storage.isCritical {
-                fail("المساحة الحرة \(storage.description) فقط. احذف ملفات ثم أعد المحاولة.")
+                fail("Only \(storage.description) free. Delete some files and try again.")
                 return
             }
-            if storage.isLow { banner = "المساحة الحرة قليلة (\(storage.description))." }
+            if storage.isLow { banner = "Storage is low (\(storage.description))." }
         }
 
         // The microphone starts now. The engine is resolved and prepared afterwards, in parallel.
@@ -110,7 +110,7 @@ final class RecordingController {
         do {
             try LectureStore.createFolder(for: lecture.id)
         } catch {
-            fail("تعذّر إنشاء مجلد المحاضرة: \(error.localizedDescription)")
+            fail("Couldn't create the lecture folder: \(error.localizedDescription)")
             return
         }
         context.insert(lecture)
@@ -121,7 +121,7 @@ final class RecordingController {
         } catch {
             lecture.status = .interrupted
             save()
-            fail("تعذّر بدء التسجيل: \(error.localizedDescription)")
+            fail("Couldn't start recording: \(error.localizedDescription)")
             return
         }
 
@@ -135,7 +135,7 @@ final class RecordingController {
         startMeter()
         phase = .recording
         liveActivity.start(title: request.title, startedAt: .now)
-        engineName = "تجهيز التفريغ…"
+        engineName = "Preparing transcription…"
 
         Task { await RecordingAlerts.requestAuthorization() }
         configureTranslation(source: request.language, target: request.targetLanguage)
@@ -178,7 +178,7 @@ final class RecordingController {
             evaluateThermalState()
         } catch {
             await created?.finish()
-            banner = "تعذّر تشغيل التفريغ اللحظي: \(error.localizedDescription) التسجيل يعمل، والجزء غير المفرَّغ يُكمَل من الصوت بعد المحاضرة."
+            banner = "Couldn't start live transcription: \(error.localizedDescription) Recording continues, and the untranscribed part is filled in from the audio after the lecture."
             engineName = EngineKind.none.title
             feed.detach(reason: .engineFailed)
         }
@@ -198,7 +198,7 @@ final class RecordingController {
             if let session = await TranslationSupport.installedSession(source: source, target: target, purpose: .live) {
                 await queue.run(with: session)
             } else {
-                self?.banner = "لغة الترجمة غير منزّلة على الجهاز. نزّلها من الإعدادات قبل المحاضرة القادمة؛ سيُطلب التنزيل الآن."
+                self?.banner = "The translation language isn't downloaded on this device. Download it in Settings before the next lecture; you'll be asked to download it now."
                 self?.translationConfiguration = TranslationSession.Configuration(
                     source: Locale.Language(identifier: source), target: Locale.Language(identifier: target)
                 )
@@ -235,7 +235,7 @@ final class RecordingController {
         guard phase == .recording else { return }
         recorder?.pause()
         pausedByInterruption = false
-        phase = .paused("متوقف مؤقتاً")
+        phase = .paused("Paused")
         liveActivity.setPaused(true)
     }
 
@@ -256,7 +256,7 @@ final class RecordingController {
             lastProgressAt = .now
             return true
         } catch {
-            banner = "تعذّر الاستئناف: \(error.localizedDescription)"
+            banner = "Couldn't resume: \(error.localizedDescription)"
             return false
         }
     }
@@ -269,21 +269,21 @@ final class RecordingController {
             .filter { !$0.isEmpty }
         guard !texts.isEmpty else { return }
         for text in texts {
-            let segment = TranscriptSegment(start: elapsed, end: elapsed, text: text, speaker: "شريحة")
+            let segment = TranscriptSegment(start: elapsed, end: elapsed, text: text, speaker: "Slide")
             context?.insert(segment)
             segment.lecture = lecture
             liveSegments.append(segment)
             segmentsByID[segment.uid] = segment
         }
         save()
-        banner = "أُضيف نص \(texts.count) من الشريحة عند \(TimeFormat.clock(elapsed))"
+        banner = "Added \(texts.count) text blocks from the slide at \(TimeFormat.clock(elapsed))"
     }
 
     func addBookmark() {
         guard let lecture else { return }
         lecture.bookmarks.append(elapsed)
         save()
-        banner = "أُضيفت علامة عند \(TimeFormat.clock(elapsed))"
+        banner = "Bookmark added at \(TimeFormat.clock(elapsed))"
     }
 
     func stop() async {
@@ -396,7 +396,7 @@ final class RecordingController {
         case .status(let message):
             banner = message.isEmpty ? nil : message
         case .failure(let message):
-            banner = "توقف التفريغ اللحظي: \(message) التسجيل مستمر، والجزء غير المفرَّغ يُكمَل من الصوت بعد المحاضرة."
+            banner = "Live transcription stopped: \(message) Recording continues, and the untranscribed part is filled in from the audio after the lecture."
             feed.detach(reason: .engineFailed)
             lecture?.transcriptionIncomplete = true
             save()
@@ -416,7 +416,7 @@ final class RecordingController {
         guard phase == .recording else { return }
         recorder?.pause()
         pausedByInterruption = true
-        phase = .paused("أُوقف التسجيل مؤقتاً بسبب مقاطعة (مكالمة أو تطبيق آخر).")
+        phase = .paused("Recording paused because of an interruption (a call or another app).")
         liveActivity.setPaused(true)
     }
 
@@ -427,7 +427,7 @@ final class RecordingController {
             try? await Task.sleep(for: .milliseconds(shouldResume ? 200 : 800))
             guard let self, case .paused = self.phase, self.pausedByInterruption else { return }
             if !self.resumeRecording() {
-                RecordingAlerts.post("التسجيل متوقف", "انتهت المقاطعة ولم يُستأنف التسجيل. افتح «دوّن» واضغط استئناف.")
+                RecordingAlerts.post("Recording paused", "The interruption ended but recording didn't resume. Open Dawwen and tap Resume.")
             }
         }
     }
@@ -440,12 +440,12 @@ final class RecordingController {
         do {
             try AudioSessionController.activateForRecording(allowBluetooth: allowBluetooth)
             try recorder.rebuildAfterMediaServicesReset(startRunning: wasRecording)
-            banner = "أعاد النظام تشغيل خدمات الصوت، واستمر التسجيل."
+            banner = "The system restarted its audio services, and recording continued."
         } catch {
-            phase = .paused("توقفت خدمات الصوت في النظام. اضغط استئناف.")
+            phase = .paused("The system's audio services stopped. Tap Resume.")
             liveActivity.setPaused(true)
             pausedByInterruption = false
-            RecordingAlerts.post("التسجيل متوقف", "أعاد النظام تشغيل خدمات الصوت. افتح «دوّن» واضغط استئناف.")
+            RecordingAlerts.post("Recording paused", "The system restarted its audio services. Open Dawwen and tap Resume.")
         }
     }
 
@@ -481,20 +481,20 @@ final class RecordingController {
         lastProgressAt = .now
         Self.log.error("no audio for 5 s, restart attempt \(self.stallAttempts)")
         let restarted = resumeRecording()
-        banner = restarted ? "انقطع وصول الصوت لحظياً وأُعيد تشغيل المايكروفون." : "لا يصل صوت من المايكروفون."
+        banner = restarted ? "Audio dropped for a moment and the microphone was restarted." : "No sound is coming from the microphone."
         if !restarted || stallAttempts >= 2 {
-            RecordingAlerts.post("تحقق من التسجيل", "لا يصل صوت من المايكروفون منذ ثوانٍ.")
+            RecordingAlerts.post("Check the recording", "No sound has come from the microphone for a few seconds.")
         }
     }
 
     private func checkStorage() {
         guard let storage = StorageGuard.status() else { return }
         if storage.freeBytes < 100_000_000 {
-            banner = "امتلأت مساحة الجهاز تقريباً؛ أُنهي التسجيل وحُفظ ما سُجّل."
-            RecordingAlerts.post("أُنهي التسجيل", "امتلأت مساحة الجهاز. حُفظ ما سُجّل حتى الآن.")
+            banner = "The device is almost full; recording ended and everything recorded was saved."
+            RecordingAlerts.post("Recording ended", "The device is full. Everything recorded so far was saved.")
             Task { await stop() }
         } else if storage.isCritical {
-            banner = "المساحة الحرة \(storage.description) فقط."
+            banner = "Only \(storage.description) free."
         }
     }
 
@@ -517,11 +517,11 @@ final class RecordingController {
             guard !suspendedForHeat else { return }
             suspendedForHeat = true
             feed.setGate(open: false, reason: .heat)
-            banner = "حرارة الجهاز مرتفعة: أوقفنا التفريغ اللحظي مؤقتاً، والتسجيل مستمر."
+            banner = "The device is hot: live transcription is paused, and recording continues."
         } else if suspendedForHeat, state == .nominal || state == .fair {
             suspendedForHeat = false
             feed.setGate(open: true, reason: .heat)
-            banner = "عاد التفريغ اللحظي. الجزء الفائت يُكمَل من الصوت بعد المحاضرة."
+            banner = "Live transcription is back. The missed part is filled in from the audio after the lecture."
         }
     }
 
@@ -529,7 +529,7 @@ final class RecordingController {
         let device = UIDevice.current
         device.isBatteryMonitoringEnabled = true
         if device.batteryState == .unplugged, device.batteryLevel >= 0, device.batteryLevel < 0.2 {
-            banner = "البطارية أقل من 20%. صِل الشاحن قبل محاضرة طويلة."
+            banner = "Battery is below 20%. Plug in the charger before a long lecture."
         }
     }
 
@@ -546,7 +546,7 @@ final class RecordingController {
             try context.save()
         } catch {
             Self.log.error("save failed: \(error.localizedDescription, privacy: .public)")
-            banner = "تعذّر حفظ آخر التغييرات: \(error.localizedDescription)"
+            banner = "Couldn't save the latest changes: \(error.localizedDescription)"
         }
     }
 

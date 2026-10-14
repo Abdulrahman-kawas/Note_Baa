@@ -3,8 +3,8 @@ import Observation
 
 /// Lets Shortcuts, Spotlight, Siri and the Action button open the new-lecture sheet.
 struct StartLectureIntent: AppIntent {
-    static var title: LocalizedStringResource = "ابدأ محاضرة جديدة"
-    static var description = IntentDescription("يفتح دوّن لبدء تسجيل محاضرة جديدة.")
+    static var title: LocalizedStringResource = "Start a New Lecture"
+    static var description = IntentDescription("Opens Dawwen to start recording a new lecture.")
     static var openAppWhenRun = true
 
     @MainActor
@@ -18,8 +18,8 @@ struct DawwenShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
             intent: StartLectureIntent(),
-            phrases: ["ابدأ محاضرة في \(.applicationName)", "Start a lecture in \(.applicationName)"],
-            shortTitle: "محاضرة جديدة",
+            phrases: ["Start a lecture in \(.applicationName)", "Start a new lecture in \(.applicationName)"],
+            shortTitle: "New Lecture",
             systemImageName: "record.circle"
         )
     }

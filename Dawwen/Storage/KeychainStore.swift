@@ -8,6 +8,13 @@ enum KeychainStore {
         case soniox = "soniox_api_key"
         /// "<device id>.<secret>" for the Dawwen gateway.
         case gatewayToken = "gateway_token"
+        // Free model providers (FreeLLMClient).
+        case gemini = "gemini_api_key"
+        case groq = "groq_api_key"
+        case ollama = "ollama_api_key"
+        case zai = "zai_api_key"
+        case cloudflareToken = "cloudflare_api_token"
+        case cloudflareAccount = "cloudflare_account_id"
     }
 
     private static let service = "com.dawwen.api-keys"
