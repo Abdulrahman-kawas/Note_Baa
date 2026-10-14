@@ -19,9 +19,9 @@ struct DatabaseRecoveryView: View {
             Image(systemName: "externaldrive.badge.exclamationmark")
                 .font(.system(size: 48))
                 .foregroundStyle(.orange)
-            Text("تعذّر فتح قاعدة بيانات المحاضرات")
+            Text("Couldn't open the lecture database")
                 .font(.title2.bold())
-            Text("ملفات الصوت ونسخة كل محاضرة (lecture.json) سليمة ولم يُحذف شيء.")
+            Text("The audio files and each lecture's copy (lecture.json) are intact, and nothing was deleted.")
                 .foregroundStyle(.secondary)
             Text(message)
                 .font(.caption.monospaced())
@@ -29,11 +29,11 @@ struct DatabaseRecoveryView: View {
                 .lineLimit(6)
                 .padding()
                 .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
-            Button("شارك ملفات قاعدة البيانات لفحصها") {
+            Button("Share the database files for inspection") {
                 SharePresenter.share(storeFiles)
             }
             .buttonStyle(.bordered)
-            Button("انقل قاعدة البيانات جانباً وابدأ من جديد", role: .destructive) {
+            Button("Move the database aside and start fresh", role: .destructive) {
                 result = moveStoreAside()
             }
             .buttonStyle(.borderedProminent)
@@ -46,7 +46,7 @@ struct DatabaseRecoveryView: View {
         .frame(maxWidth: 560)
     }
 
-    /// After relaunch, Library offers "استعادة المحاضرات من ملفاتها" (LectureArchive.restoreAll).
+    /// After relaunch, Library offers "Restore lectures from their files" (LectureArchive.restoreAll).
     private func moveStoreAside() -> String {
         let folder = LectureStore.recoveryFolder.appending(path: "database-\(Int(Date().timeIntervalSince1970))")
         do {
@@ -54,9 +54,9 @@ struct DatabaseRecoveryView: View {
             for file in storeFiles {
                 try FileManager.default.moveItem(at: file, to: folder.appending(path: file.lastPathComponent))
             }
-            return "نُقلت إلى Recovery/\(folder.lastPathComponent). أغلق التطبيق من مبدّل التطبيقات وافتحه، ثم اختر «استعادة المحاضرات من ملفاتها»."
+            return "Moved to Recovery/\(folder.lastPathComponent). Close the app from the app switcher and reopen it, then choose “Restore lectures from their files”."
         } catch {
-            return "تعذّر النقل: \(error.localizedDescription)"
+            return "Couldn't move it: \(error.localizedDescription)"
         }
     }
 }

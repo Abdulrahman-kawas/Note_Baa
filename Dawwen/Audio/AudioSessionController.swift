@@ -12,7 +12,7 @@ final class AudioSessionController {
 
     /// `.record` takes the built-in, wired or USB-C microphone; a clip-on wireless mic's USB-C
     /// receiver shows up as USB and needs nothing more. Bluetooth HFP is narrow-band (8–16 kHz) and
-    /// hurts recognition, so it is opt-in (Settings ▸ أثناء التسجيل).
+    /// hurts recognition, so it is opt-in (Settings ▸ While recording).
     static func activateForRecording(allowBluetooth: Bool = false) throws {
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.record, mode: .default, options: allowBluetooth ? [.allowBluetoothHFP] : [])

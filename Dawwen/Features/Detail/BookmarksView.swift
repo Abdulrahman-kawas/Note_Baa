@@ -37,7 +37,7 @@ struct BookmarksView: View {
         }
         .overlay {
             if marks.isEmpty {
-                ContentUnavailableView("لا علامات", systemImage: "bookmark", description: Text("اضغط «علامة» أثناء التسجيل لتمييز لحظة مهمة."))
+                ContentUnavailableView("No bookmarks", systemImage: "bookmark", description: Text("Tap Bookmark while recording to mark an important moment."))
             }
         }
     }

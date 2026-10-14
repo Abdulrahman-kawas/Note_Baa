@@ -34,11 +34,11 @@ struct ClaudeClient: Sendable {
 
         var errorDescription: String? {
             switch self {
-            case .missingKey: "أضف مفتاح Claude API من الإعدادات، أو فعّل Claude عبر الخادم."
-            case .http(let code, let message): "خطأ من Claude (\(code)): \(message)"
-            case .api(let message): "خطأ من Claude: \(message)"
-            case .refusal: "رفض النموذج إكمال الطلب. جرّب نموذجاً آخر من الإعدادات."
-            case .invalidResponse: "رد غير متوقع من Claude."
+            case .missingKey: "Add a Claude API key in Settings, or turn on Claude through the server."
+            case .http(let code, let message): "Claude error (\(code)): \(message)"
+            case .api(let message): "Claude error: \(message)"
+            case .refusal: "The model declined to complete the request. Try another model in Settings."
+            case .invalidResponse: "Unexpected response from Claude."
             }
         }
     }
@@ -139,7 +139,7 @@ struct ClaudeClient: Sendable {
                     }
                 case "error":
                     let error = event["error"] as? [String: Any]
-                    let message = error?["message"] as? String ?? "خطأ غير معروف"
+                    let message = error?["message"] as? String ?? "Unknown error"
                     if error?["type"] as? String == "overloaded_error" {
                         throw Retryable(underlying: ClaudeError.api(message), retryAfter: nil)
                     }
@@ -151,7 +151,7 @@ struct ClaudeClient: Sendable {
             // Check the stop reason before treating the text as complete.
             if stopReason == "refusal" { throw ClaudeError.refusal }
             if stopReason == "max_tokens", request.outputSchema == nil {
-                onText("\n\n_(توقف الرد عند الحد الأقصى للطول)_")
+                onText("\n\n_(The response stopped at the maximum length)_")
             }
         } catch let error as URLError where Self.transientNetworkCodes.contains(error.code) {
             throw Retryable(underlying: error, retryAfter: nil)

@@ -76,9 +76,9 @@ struct AskView: View {
 
     @State private var question = ""
     private let examples = [
-        "ما أهم ثلاث أفكار في هذه المحاضرة؟",
-        "اشرح أصعب مفهوم ورد فيها بمثال بسيط.",
-        "هل ذكر المحاضر شيئاً عن الامتحان أو الواجبات؟"
+        "What are the three most important ideas in this lecture?",
+        "Explain the hardest concept in it with a simple example.",
+        "Did the lecturer mention anything about the exam or assignments?"
     ]
 
     var body: some View {
@@ -90,7 +90,7 @@ struct AskView: View {
                             SavedQuestionView(entry: saved)
                         }
                         if session.entries.isEmpty && lecture.questions.isEmpty {
-                            Text("اسأل عن أي شيء قيل في المحاضرة؛ الإجابة تذكر الطوابع الزمنية.")
+                            Text("Ask about anything said in the lecture; answers cite timestamps.")
                                 .foregroundStyle(.secondary)
                             ForEach(examples, id: \.self) { example in
                                 Button(example) { send(example) }
@@ -125,7 +125,7 @@ struct AskView: View {
             }
             Divider()
             HStack(alignment: .bottom, spacing: 10) {
-                TextField("اسأل عن المحاضرة…", text: $question, axis: .vertical)
+                TextField("Ask about the lecture…", text: $question, axis: .vertical)
                     .lineLimit(1...4)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { send(question) }
@@ -134,7 +134,7 @@ struct AskView: View {
                 } label: {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.system(size: 30))
-                        .accessibilityLabel("إرسال")
+                        .accessibilityLabel("Send")
                 }
                 .disabled(question.trimmingCharacters(in: .whitespaces).isEmpty || session.isBusy)
             }

@@ -10,7 +10,7 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.claudeModel) private var modelRaw = ClaudeModelOption.sonnet.rawValue
     @AppStorage(SettingsKey.askModel) private var askModelRaw = ClaudeModelOption.haiku.rawValue
     @AppStorage(SettingsKey.refineModel) private var refineModelRaw = ClaudeModelOption.haiku.rawValue
-    @AppStorage(SettingsKey.summaryLanguage) private var summaryLanguage = "ar"
+    @AppStorage(SettingsKey.summaryLanguage) private var summaryLanguage = "en"
     @AppStorage(SettingsKey.keepScreenOn) private var keepScreenOn = true
     @AppStorage(SettingsKey.allowBluetoothMic) private var allowBluetoothMic = false
     @AppStorage(SettingsKey.vocabulary) private var vocabulary = ""
@@ -35,20 +35,20 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section {
-                    Picker("لغة المحاضرة الافتراضية", selection: $language) {
+                    Picker("Default lecture language", selection: $language) {
                         ForEach(Languages.lecture) { Text($0.name).tag($0.id) }
                     }
-                    Picker("محرك التفريغ", selection: $engineRaw) {
+                    Picker("Transcription engine", selection: $engineRaw) {
                         ForEach(EngineKind.allCases) { Text($0.title).tag($0.rawValue) }
                     }
-                    Button("نزّل نموذج التفريغ للعمل دون إنترنت") {
+                    Button("Download the transcription model for offline use") {
                         Task { await prepareSpeech() }
                     }
                     if let speechStatus {
                         Text(speechStatus).font(.footnote).foregroundStyle(.secondary)
                     }
                 } header: {
-                    Text("التفريغ")
+                    Text("Transcription")
                 } footer: {
                     Text(engine.detail)
                 }
@@ -58,33 +58,33 @@ struct SettingsView: View {
                         .frame(minHeight: 90)
                         .environment(\.layoutDirection, vocabulary.isMostlyRTL ? .rightToLeft : .leftToRight)
                 } header: {
-                    Text("مصطلحات المادة")
+                    Text("Course vocabulary")
                 } footer: {
-                    Text("مصطلح في كل سطر (أسماء، مفاهيم، اختصارات) لتحسين دقة كتابتها.")
+                    Text("One term per line (names, concepts, abbreviations) to help the transcriber spell them correctly.")
                 }
 
                 Section {
-                    Toggle("ترجمة لحظية افتراضياً", isOn: $translationEnabled)
-                    Picker("لغة الترجمة", selection: $targetLanguage) {
+                    Toggle("Live translation by default", isOn: $translationEnabled)
+                    Picker("Translation language", selection: $targetLanguage) {
                         ForEach(Languages.translation) { Text($0.name).tag($0.id) }
                     }
-                    Button("نزّل لغتي الترجمة الآن (مرة واحدة، قبل المحاضرات)") {
+                    Button("Download both translation languages now (once, before lectures)") {
                         prepareTranslation()
                     }
                     if let translationStatus {
                         Text(translationStatus).font(.footnote).foregroundStyle(.secondary)
                     }
                 } header: {
-                    Text("الترجمة")
+                    Text("Translation")
                 } footer: {
-                    Text("الترجمة على الجهاز مجانية ودون إنترنت، لكنها لا تعمل أثناء المحاضرة إن لم تكن اللغتان منزّلتين.")
+                    Text("On-device translation is free and works offline, but it won't run during a lecture unless both languages are downloaded.")
                 }
                 .translationTask(translationPreparation) { session in
                     do {
                         try await session.prepareTranslation()
-                        translationStatus = "اللغتان جاهزتان دون إنترنت."
+                        translationStatus = "Both languages are ready offline."
                     } catch {
-                        translationStatus = "تعذّر التنزيل: \(error.localizedDescription)"
+                        translationStatus = "Download failed: \(error.localizedDescription)"
                     }
                 }
 
@@ -92,48 +92,48 @@ struct SettingsView: View {
                     TextEditor(text: $glossary)
                         .frame(minHeight: 90)
                         .environment(\.layoutDirection, .leftToRight)
-                    Picker("نموذج التحسين", selection: $refineModelRaw) {
+                    Picker("Refinement model", selection: $refineModelRaw) {
                         ForEach(ClaudeModelOption.allCases) { Text($0.title).tag($0.rawValue) }
                     }
-                    Picker("طريقة التحسين", selection: $refineEngine) {
-                        Text("الآن من الآيباد").tag("now")
-                        Text("لاحقاً بنصف السعر (خادم، Batch)").tag("claude-batch")
-                        Text("الخادم المنزلي (نموذج محلي)").tag("home")
+                    Picker("Refinement method", selection: $refineEngine) {
+                        Text("Now, from the iPad").tag("now")
+                        Text("Later at half price (server, Batch)").tag("claude-batch")
+                        Text("Home server (local model)").tag("home")
                     }
                 } header: {
-                    Text("تحسين الترجمة بعد المحاضرة")
+                    Text("Refine translation after the lecture")
                 } footer: {
-                    Text("سطر لكل مصطلح: English term = المصطلح العربي. يستخدمه التحسين بالسياق ليثبت المصطلحات في كل المحاضرات.")
+                    Text("One line per term: English term = translated term. The refinement pass uses it to keep terms consistent across all lectures.")
                 }
 
                 Section {
-                    Picker("نموذج الملخص", selection: $modelRaw) {
+                    Picker("Summary model", selection: $modelRaw) {
                         ForEach(ClaudeModelOption.allCases) { Text($0.title).tag($0.rawValue) }
                     }
-                    LabeledContent("السعر", value: model.priceNote)
-                    Picker("نموذج «اسأل»", selection: $askModelRaw) {
+                    LabeledContent("Price", value: model.priceNote)
+                    Picker("Ask model", selection: $askModelRaw) {
                         ForEach(ClaudeModelOption.allCases) { Text($0.title).tag($0.rawValue) }
                     }
-                    Picker("لغة الملخص", selection: $summaryLanguage) {
+                    Picker("Summary and answer language", selection: $summaryLanguage) {
                         ForEach(Languages.translation) { Text($0.name).tag($0.id) }
                     }
-                    SecureField("مفتاح Claude API", text: $anthropicKey)
+                    SecureField("Claude API key", text: $anthropicKey)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                 } header: {
-                    Text("Claude (اختياري)")
+                    Text("Claude (optional)")
                 } footer: {
-                    Text("المفتاح من console.anthropic.com ويُحفظ في Keychain هذا الجهاز. لا حاجة له إن فعّلت Claude عبر الخادم.")
+                    Text("Get the key from console.anthropic.com. It is stored in this device's Keychain. Not needed if you use Claude through the server.")
                 }
 
                 Section {
-                    SecureField("مفتاح Soniox", text: $sonioxKey)
+                    SecureField("Soniox key", text: $sonioxKey)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                 } header: {
-                    Text("Soniox (اختياري)")
+                    Text("Soniox (optional)")
                 } footer: {
-                    Text("للدقة الأعلى وتمييز المتحدثين: نحو 0.12 $ للساعة، دون رصيد مجاني للحسابات الجديدة.")
+                    Text("For higher accuracy and speaker labels: about $0.12 per hour, with no free credit for new accounts.")
                 }
 
                 Section {
@@ -142,34 +142,34 @@ struct SettingsView: View {
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
                         .environment(\.layoutDirection, .leftToRight)
-                    SecureField("رمز الجهاز", text: $gatewayToken)
+                    SecureField("Device token", text: $gatewayToken)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    Toggle("Claude عبر الخادم (المفتاح وسقف الإنفاق هناك)", isOn: $claudeViaGateway)
-                    Toggle("Soniox بمفاتيح مؤقتة من الخادم", isOn: $sonioxViaGateway)
-                    Toggle("نسخ احتياطي للصوت والنص إلى الخادم", isOn: $backupEnabled)
+                    Toggle("Claude through the server (key and spending cap live there)", isOn: $claudeViaGateway)
+                    Toggle("Soniox with temporary keys from the server", isOn: $sonioxViaGateway)
+                    Toggle("Back up audio and text to the server", isOn: $backupEnabled)
                 } header: {
-                    Text("الخادم (اختياري)")
+                    Text("Server (optional)")
                 } footer: {
-                    Text("التسجيل والتفريغ والترجمة لا تحتاج الخادم أبداً. الرمز من أداة issue_device_token.py.")
+                    Text("Recording, transcription and translation never need the server. Get the token from the issue_device_token.py tool.")
                 }
 
-                Section("أثناء التسجيل") {
-                    Toggle("إبقاء الشاشة مضاءة", isOn: $keepScreenOn)
-                    Toggle("السماح بمايكروفون بلوتوث (جودة أقل)", isOn: $allowBluetoothMic)
+                Section("While recording") {
+                    Toggle("Keep the screen on", isOn: $keepScreenOn)
+                    Toggle("Allow Bluetooth microphones (lower quality)", isOn: $allowBluetoothMic)
                 }
 
-                Section("الخصوصية") {
-                    Text("الصوت والنص على هذا الآيباد. لا يغادره شيء إلا: الصوت إلى Soniox إن اخترته، والنص إلى Anthropic عند طلب ملخص أو سؤال أو تحسين ترجمة، والنسخة الاحتياطية إلى حسابك على AWS إن فعّلتها.")
+                Section("Privacy") {
+                    Text("Audio and text stay on this iPad. Nothing leaves it except: audio to Soniox if you choose it, text to Anthropic when you ask for a summary, an answer or a translation refinement, and the backup to your AWS account if you turn it on.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
             }
-            .navigationTitle("الإعدادات")
+            .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("تم") { dismiss() }
+                    Button("Done") { dismiss() }
                 }
             }
             .onAppear {
@@ -187,16 +187,16 @@ struct SettingsView: View {
     }
 
     private func prepareSpeech() async {
-        speechStatus = "يجهّز النموذج…"
+        speechStatus = "Preparing the model…"
         guard let module = await AppleSpeechEngine.makeModule(for: Locale(identifier: language), live: true) else {
-            speechStatus = "هذا الجهاز لا يدعم التفريغ على الجهاز لـ \(Languages.name(for: language))."
+            speechStatus = "This device doesn't support on-device transcription for \(Languages.name(for: language))."
             return
         }
         do {
             try await AppleSpeechEngine.installAssets(for: module.speechModule) { _ in }
-            speechStatus = "\(module.name): نموذج \(Languages.name(for: language)) جاهز دون إنترنت."
+            speechStatus = "\(module.name): the \(Languages.name(for: language)) model is ready offline."
         } catch {
-            speechStatus = "تعذّر التنزيل: \(error.localizedDescription)"
+            speechStatus = "Download failed: \(error.localizedDescription)"
         }
     }
 
@@ -214,9 +214,9 @@ struct SettingsView: View {
 
     private func refreshTranslationStatus() async {
         switch await TranslationSupport.status(source: language, target: targetLanguage) {
-        case .installed: translationStatus = "اللغتان منزّلتان وجاهزتان دون إنترنت."
-        case .supported: translationStatus = "مدعومة لكن غير منزّلة بعد: اضغط زر التنزيل."
-        case .unsupported: translationStatus = "هذا الزوج غير مدعوم في Apple Translation."
+        case .installed: translationStatus = "Both languages are downloaded and ready offline."
+        case .supported: translationStatus = "Supported but not downloaded yet: tap the download button."
+        case .unsupported: translationStatus = "Apple Translation doesn't support this language pair."
         @unknown default: translationStatus = nil
         }
     }
