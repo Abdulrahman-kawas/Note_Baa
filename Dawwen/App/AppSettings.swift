@@ -140,7 +140,8 @@ enum Languages {
         .init(id: "fr", name: "Français"),
         .init(id: "de", name: "Deutsch"),
         .init(id: "es", name: "Español"),
-        .init(id: "tr", name: "Türkçe")
+        .init(id: "tr", name: "Türkçe"),
+        .init(id: "ru", name: "Русский")
     ]
 
     static func name(for id: String) -> String {
