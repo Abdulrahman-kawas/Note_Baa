@@ -9,7 +9,9 @@ enum SettingsKey {
     static let askModel = "askModel"
     static let refineModel = "refineModel"
     static let summaryLanguage = "summaryLanguage"
+    static let answerLanguage = "answerLanguage"
     static let bilingualAnswers = "bilingualAnswers"
+    static let autoKeyTerms = "autoKeyTerms"
     static let keepScreenOn = "keepScreenOn"
     static let vocabulary = "vocabulary"
     static let glossary = "glossary"
@@ -39,8 +41,12 @@ struct AppSettings {
     /// Context-aware translation pass after the lecture.
     var refineModel: AIModel
     var summaryLanguage: String
-    /// Answers to questions in both Arabic and English.
+    /// Ask AI's language: `Languages.sameAsTranslation` or a language id.
+    var answerLanguage: String
+    /// Ask AI also repeats the answer in the lecture's language.
     var bilingualAnswers: Bool
+    /// Make the key terms sheet when a recording ends.
+    var autoKeyTerms: Bool
     var keepScreenOn: Bool
     /// Course terms that bias recognition (one per line in Settings).
     var vocabulary: [String]
@@ -63,7 +69,9 @@ struct AppSettings {
             SettingsKey.askModel: ClaudeModelOption.haiku.rawValue,
             SettingsKey.refineModel: ClaudeModelOption.haiku.rawValue,
             SettingsKey.summaryLanguage: "en",
+            SettingsKey.answerLanguage: Languages.sameAsTranslation,
             SettingsKey.bilingualAnswers: true,
+            SettingsKey.autoKeyTerms: true,
             SettingsKey.keepScreenOn: true,
             SettingsKey.vocabulary: "",
             SettingsKey.glossary: "",
@@ -89,7 +97,9 @@ struct AppSettings {
             askModel: model(SettingsKey.askModel, .haiku),
             refineModel: model(SettingsKey.refineModel, .haiku),
             summaryLanguage: defaults.string(forKey: SettingsKey.summaryLanguage) ?? "en",
+            answerLanguage: defaults.string(forKey: SettingsKey.answerLanguage) ?? Languages.sameAsTranslation,
             bilingualAnswers: defaults.bool(forKey: SettingsKey.bilingualAnswers),
+            autoKeyTerms: defaults.bool(forKey: SettingsKey.autoKeyTerms),
             keepScreenOn: defaults.bool(forKey: SettingsKey.keepScreenOn),
             vocabulary: lines(defaults.string(forKey: SettingsKey.vocabulary)),
             glossary: lines(defaults.string(forKey: SettingsKey.glossary)).compactMap { line in
@@ -103,6 +113,12 @@ struct AppSettings {
             backupEnabled: defaults.bool(forKey: SettingsKey.backupEnabled),
             refineEngine: defaults.string(forKey: SettingsKey.refineEngine) ?? "now"
         )
+    }
+
+    /// The language Ask AI writes in for this lecture: the one its translation is in, unless a fixed
+    /// language is chosen in Settings.
+    func answerLanguage(lectureTarget: String?) -> String {
+        answerLanguage == Languages.sameAsTranslation ? (lectureTarget ?? targetLanguage) : answerLanguage
     }
 
     private static func lines(_ text: String?) -> [String] {
@@ -119,6 +135,9 @@ struct LanguageOption: Identifiable, Hashable {
 }
 
 enum Languages {
+    /// Stored as the Ask AI language when it follows the translation language.
+    static let sameAsTranslation = "auto"
+
     static let lecture: [LanguageOption] = [
         .init(id: "en-US", name: "English (US)"),
         .init(id: "en-GB", name: "English (UK)"),

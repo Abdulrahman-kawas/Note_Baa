@@ -124,6 +124,37 @@ enum LecturePrompt {
         """
     }
 
+    // MARK: - Key terms sheet
+
+    /// The vocabulary sheet a student reviews before the exam (`KeyTerms.outputSchema`).
+    static func keyTermsRequest(lectureLanguage: String, readingLanguage: String, glossary: [GlossaryEntry]) -> String {
+        let spoken = Languages.englishName(for: lectureLanguage)
+        let reading = Languages.englishName(for: readingLanguage)
+        let translationRule = Languages.code(lectureLanguage) == Languages.code(readingLanguage)
+            ? "- translation: leave it empty."
+            : "- translation: the usual \(reading) equivalent, as a good textbook would write it. For an abbreviation, its expansion and then the translation."
+        let fixed = glossary.isEmpty ? "" : "\n\nThe student keeps these fixed translations; use them whenever one of these terms appears:\n"
+            + glossary.prefix(200).map { "- \($0.term) = \($0.translation)" }.joined(separator: "\n")
+        return """
+        Make the vocabulary sheet for this lecture: the key terms and words the student needs to know and will review before the exam. The student reads it in \(reading).
+
+        Include:
+        - every technical term, concept, named method, law, formula or abbreviation that the lecture teaches or relies on;
+        - important academic or general \(spoken) words that a student reading in \(reading) may not know and needs in order to follow the lecture.
+        Leave out everyday words, filler, and things mentioned only in passing.
+
+        For each entry:
+        - term: as used in the lecture, in \(spoken), with obvious speech-recognition errors corrected; in its base form (singular, infinitive) unless the lecture uses a fixed phrase.
+        - kind: "term" for a technical term or concept, "word" for a general word.
+        \(translationRule)
+        - meaning: one or two short sentences in \(reading) on what it means in this lecture, as the lecturer explained it.
+        - example: one short sentence in \(spoken) from the lecture that uses it, lightly cleaned up (the lecturer's own example when there is one).
+        - time: the [hh:mm:ss] position where it is first explained, copied exactly from the transcript.
+
+        Order the entries by when they first come up, and never list a term twice. Scale the list with the lecture: about 15 entries for a short or light lecture, up to 60 for a long, dense one.\(fixed)
+        """
+    }
+
     // MARK: - Questions and tutoring
 
     /// One earlier question and answer, so follow-ups ("explain it again", a quiz answer) make sense.
@@ -133,12 +164,12 @@ enum LecturePrompt {
     }
 
     /// `history` is oldest first. `live`: the lecture is still going on.
-    static func questionRequest(_ question: String, outputLanguage: String, bilingual: Bool,
+    static func questionRequest(_ question: String, outputLanguage: String, lectureLanguage: String, bilingual: Bool,
                                 live: Bool = false, history: [Exchange] = []) -> String {
         var text = """
         Answer the student's message using the lecture transcript. Cite the [hh:mm:ss] timestamps your answer draws on. If the lecture does not cover the question, say so plainly; you may then add a general explanation, labelled as not coming from the lecture.
 
-        \(tutorGuide(outputLanguage: outputLanguage, bilingual: bilingual, live: live))
+        \(tutorGuide(outputLanguage: outputLanguage, lectureLanguage: lectureLanguage, bilingual: bilingual, live: live))
         """
         if !history.isEmpty {
             text += "\n\nCONVERSATION SO FAR (oldest first):\n" + history.map { exchange in
@@ -150,11 +181,20 @@ enum LecturePrompt {
     }
 
     /// How the assistant teaches: when to go deep with examples and when to stay short.
-    static func tutorGuide(outputLanguage: String, bilingual: Bool, live: Bool) -> String {
+    static func tutorGuide(outputLanguage: String, lectureLanguage: String, bilingual: Bool, live: Bool) -> String {
         let language = Languages.englishName(for: outputLanguage)
-        let languageRule = bilingual
-            ? "Answer in both Arabic and English: the answer in Arabic first, then the same answer in English after a line containing only ---. After a long explanation, the English part may keep to the key points. Write each technical term in both languages the first time, like: الانحدار الخطي (linear regression)."
-            : "Answer in \(language), unless the student writes in another language; then answer in theirs. Give each technical term in the lecture's language in parentheses the first time it appears."
+        let spoken = Languages.englishName(for: lectureLanguage)
+        // The student picked the language in the app; their message may be in another one
+        // (typing Russian or Arabic on the go is slow), so it doesn't decide.
+        let keep = "whatever language the lecture or the student's message is in, unless the student explicitly asks for another language"
+        let languageRule: String
+        if Languages.code(outputLanguage) == Languages.code(lectureLanguage) {
+            languageRule = "Always answer in \(language), \(keep)."
+        } else if bilingual {
+            languageRule = "Always answer in both \(language) and \(spoken), \(keep): the answer in \(language) first, then the same answer in \(spoken) after a line containing only ---. After a long explanation, the \(spoken) part may keep to the key points. Write each technical term in both languages the first time, the \(language) term followed by the \(spoken) one in parentheses."
+        } else {
+            languageRule = "Always answer in \(language), \(keep). Give each technical term in \(spoken), the lecture's language, in parentheses the first time it appears."
+        }
         let pace = live
             ? "\n- The lecture is still going on and the student reads between moments of listening. Unless they ask for detail, keep to a few short lines they can read in seconds."
             : ""

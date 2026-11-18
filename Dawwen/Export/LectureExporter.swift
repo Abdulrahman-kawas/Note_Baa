@@ -2,6 +2,7 @@ import AVFoundation
 import Foundation
 
 /// Builds the files a student takes elsewhere: plain text, Markdown, SRT subtitles, and the audio.
+/// The key terms sheet is `KeyTerms`.
 @MainActor
 enum LectureExporter {
     enum Format: String, CaseIterable, Identifiable {
@@ -98,7 +99,7 @@ enum LectureExporter {
     static func cleanTemporaryExports() {
         let folder = FileManager.default.temporaryDirectory
         let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
-        for name in names where ["txt", "md", "srt", "m4a"].contains((name as NSString).pathExtension) {
+        for name in names where ["txt", "md", "srt", "m4a", "xlsx"].contains((name as NSString).pathExtension) {
             try? FileManager.default.removeItem(at: folder.appending(path: name))
         }
     }
@@ -109,7 +110,7 @@ enum LectureExporter {
         return url
     }
 
-    private static func fileName(for lecture: Lecture) -> String {
+    static func fileName(for lecture: Lecture) -> String {
         let cleaned = lecture.title.components(separatedBy: CharacterSet(charactersIn: "/\\:?%*|\"<>")).joined(separator: "-")
         return cleaned.isEmpty ? "lecture" : String(cleaned.prefix(80))
     }

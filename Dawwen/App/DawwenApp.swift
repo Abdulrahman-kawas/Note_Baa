@@ -25,6 +25,7 @@ struct DawwenApp: App {
             // A lecture still marked "recording" means the app died mid-lecture.
             LectureStore.recoverInterruptedLectures(in: container.mainContext)
             BackupUploader.shared.container = container
+            KeyTermsStore.shared.container = container
             BackgroundWork.shared.registerLaunchHandler()
             startup = .ready(container)
         } catch {
@@ -57,6 +58,7 @@ struct DawwenApp: App {
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active {
                     Task { await BackupUploader.shared.enqueuePending() }
+                    KeyTermsStore.shared.resumePending()
                 }
             }
         }

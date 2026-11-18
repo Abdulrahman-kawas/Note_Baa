@@ -37,7 +37,8 @@ final class AskSession {
         let request = ClaudeClient.Request(
             preamble: LecturePrompt.preamble(for: lecture),
             context: LecturePrompt.transcript(for: lecture),
-            userMessage: LecturePrompt.questionRequest(question, outputLanguage: settings.summaryLanguage,
+            userMessage: LecturePrompt.questionRequest(question, outputLanguage: Self.answerLanguage(for: lecture),
+                                                       lectureLanguage: lecture.sourceLanguage,
                                                        bilingual: settings.bilingualAnswers, history: Self.history(of: lecture)),
             effort: "medium",
             maxTokens: 16_000
@@ -49,10 +50,11 @@ final class AskSession {
     /// just asked the class.
     func askLive(_ question: String?, label: String? = nil, about lecture: Lecture, recording: RecordingController) {
         let settings = AppSettings.current
+        let language = Self.answerLanguage(for: lecture)
         let userMessage = question.map {
-            LecturePrompt.questionRequest($0, outputLanguage: settings.summaryLanguage, bilingual: settings.bilingualAnswers,
-                                          live: true, history: Self.history(of: lecture))
-        } ?? LecturePrompt.lecturerQuestionRequest(lectureLanguage: lecture.sourceLanguage, outputLanguage: settings.summaryLanguage)
+            LecturePrompt.questionRequest($0, outputLanguage: language, lectureLanguage: lecture.sourceLanguage,
+                                          bilingual: settings.bilingualAnswers, live: true, history: Self.history(of: lecture))
+        } ?? LecturePrompt.lecturerQuestionRequest(lectureLanguage: lecture.sourceLanguage, outputLanguage: language)
         let request = ClaudeClient.Request(
             preamble: LecturePrompt.livePreamble(for: lecture, elapsed: recording.elapsed),
             context: LecturePrompt.liveTranscript(recording.liveSegments, partial: recording.partialText),
@@ -62,6 +64,12 @@ final class AskSession {
         )
         send(label ?? question ?? "The lecturer's question at \(TimeFormat.clock(recording.elapsed))",
              request: request, about: lecture)
+    }
+
+    /// The translation language of this lecture (or the one fixed in Settings): Russian translation,
+    /// Russian answers.
+    private static func answerLanguage(for lecture: Lecture) -> String {
+        AppSettings.current.answerLanguage(lectureTarget: lecture.targetLanguage)
     }
 
     /// The last few answered questions, so a follow-up or a quiz answer has its context.

@@ -11,6 +11,7 @@ struct RecordingView: View {
     @State private var controller = RecordingController()
     @State private var confirmStop = false
     @State private var followLive = true
+    @State private var transcriptAtBottom = true
     @State private var lectureMode = false
     @State private var showSlideCapture = false
     @State private var askSession = AskSession()
@@ -197,14 +198,38 @@ struct RecordingView: View {
             .onScrollGeometryChange(for: CGSize.self, of: { $0.containerSize }) { _, _ in
                 if followLive { proxy.scrollTo("live-bottom", anchor: .bottom) }
             }
-            .safeAreaInset(edge: .top) {
-                HStack {
-                    Spacer()
-                    Toggle("Follow transcript", isOn: $followLive)
-                        .toggleStyle(.button)
-                        .font(.caption)
-                        .padding(8)
+            .onScrollGeometryChange(for: Bool.self, of: { geometry in
+                geometry.visibleRect.maxY >= geometry.contentSize.height - 48
+            }) { _, atBottom in
+                transcriptAtBottom = atBottom
+            }
+            // Dragging the transcript stops it following the lecture, so earlier lines can be read in
+            // peace; leaving it at the end again picks the live lines back up.
+            .onScrollPhaseChange { _, phase in
+                switch phase {
+                case .interacting: followLive = false
+                case .idle: if transcriptAtBottom { followLive = true }
+                default: break
                 }
+            }
+            .overlay(alignment: .bottom) {
+                VStack {
+                    if !followLive {
+                        Button {
+                            followLive = true
+                            withAnimation { proxy.scrollTo("live-bottom", anchor: .bottom) }
+                        } label: {
+                            Label("Back to live", systemImage: "arrow.down")
+                                .font(.subheadline.bold())
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .buttonBorderShape(.capsule)
+                        .shadow(radius: 4, y: 2)
+                        .padding(.bottom, 12)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                }
+                .animation(.snappy, value: followLive)
             }
         }
     }

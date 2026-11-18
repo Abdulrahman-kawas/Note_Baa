@@ -18,8 +18,10 @@ struct LectureDetailView: View {
     @State private var confirmRetranscribe = false
     @State private var showRename = false
     @State private var draftTitle = ""
+    @State private var confirmDeleteKeyTerms = false
 
     private var work: BackgroundWork { BackgroundWork.shared }
+    private var keyTerms: KeyTermsStore { KeyTermsStore.shared }
     private var isWorking: Bool { work.running.contains(lecture.id) }
 
     enum DetailTab: String, CaseIterable, Identifiable {
@@ -47,6 +49,10 @@ struct LectureDetailView: View {
 
             if lecture.transcriptionIncomplete && !isWorking {
                 incompleteBanner
+            }
+
+            if keyTerms.unseen.contains(lecture.id) {
+                keyTermsBanner
             }
 
             Group {
@@ -90,6 +96,12 @@ struct LectureDetailView: View {
         } message: {
             Text("Deletes every sentence, its translation and speaker names, and replaces them with a new on-device Apple transcription. To fill in only the missing parts, use “Fill in missing transcript”.")
         }
+        .confirmationDialog("Delete the key terms list?", isPresented: $confirmDeleteKeyTerms, titleVisibility: .visible) {
+            Button("Delete the list", role: .destructive) { keyTerms.delete(lecture.id) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("You can make it again from the same button.")
+        }
         .alert("Rename lecture", isPresented: $showRename) {
             TextField("Title", text: $draftTitle)
             Button("Save") {
@@ -115,6 +127,9 @@ struct LectureDetailView: View {
             if let message = work.status[lecture.id] ?? status {
                 Text("·")
                 Text(message).foregroundStyle(.blue)
+            } else if keyTerms.working.contains(lecture.id) {
+                Text("·")
+                Text("Making the key terms list…").foregroundStyle(.blue)
             } else if translationQueue.pendingCount > 0 {
                 Text("·")
                 Text("Waiting for translation: \(translationQueue.pendingCount)").foregroundStyle(.blue)
@@ -150,12 +165,38 @@ struct LectureDetailView: View {
         .background(.orange.opacity(0.12))
     }
 
+    /// Until the list made after the lecture is opened, so the student knows it was saved.
+    private var keyTermsBanner: some View {
+        HStack(spacing: 10) {
+            Circle().fill(.red).frame(width: 9, height: 9)
+            Label("The key terms list (Excel) is ready and saved with this lecture.", systemImage: "tablecells.fill")
+            Spacer()
+            Button("Open") { shareKeyTerms() }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+            Button {
+                keyTerms.markSeen(lecture.id)
+            } label: {
+                Image(systemName: "xmark")
+                    .accessibilityLabel("Dismiss")
+            }
+            .buttonStyle(.borderless)
+        }
+        .font(.footnote)
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+        .background(.red.opacity(0.1))
+    }
+
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
         ToolbarItem {
             Toggle(isOn: $showTranslation) {
                 Label("Show translation", systemImage: "character.bubble")
             }
+        }
+        ToolbarItem {
+            keyTermsMenu
         }
         ToolbarItem {
             Menu {
@@ -320,6 +361,66 @@ struct LectureDetailView: View {
             try context.save()
             try? LectureArchive.write(lecture)
             return "Transcription complete: \(segments.count) sentences"
+        }
+    }
+
+    /// Red while a list made after the lecture hasn't been opened.
+    private var keyTermsMenu: some View {
+        let id = lecture.id
+        return Menu {
+            if keyTerms.ready.contains(id) {
+                Button {
+                    shareKeyTerms()
+                } label: {
+                    Label("Open or share the key terms list (Excel)", systemImage: "square.and.arrow.up")
+                }
+                Button {
+                    makeKeyTerms()
+                } label: {
+                    Label("Make the list again", systemImage: "arrow.clockwise")
+                }
+                Button(role: .destructive) {
+                    confirmDeleteKeyTerms = true
+                } label: {
+                    Label("Delete the list", systemImage: "trash")
+                }
+            } else {
+                Button {
+                    makeKeyTerms()
+                } label: {
+                    Label("Make the key terms list (Excel)", systemImage: "tablecells")
+                }
+                .disabled(lecture.segments.isEmpty)
+            }
+        } label: {
+            Label("Key terms", systemImage: keyTerms.unseen.contains(id) ? "tablecells.fill" : "tablecells")
+        }
+        .tint(keyTerms.unseen.contains(id) ? .red : nil)
+        .disabled(keyTerms.working.contains(id))
+    }
+
+    private func shareKeyTerms() {
+        let lecture = lecture
+        Task {
+            do {
+                try await keyTerms.share(lecture)
+            } catch {
+                status = "Couldn't open the key terms list: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Made on request, so it opens right away instead of getting the red mark.
+    private func makeKeyTerms() {
+        let lecture = lecture
+        Task {
+            status = nil
+            do {
+                try await keyTerms.make(lecture, automatic: false)
+                try await keyTerms.share(lecture)
+            } catch {
+                status = "Couldn't make the key terms list: \(error.localizedDescription)"
+            }
         }
     }
 

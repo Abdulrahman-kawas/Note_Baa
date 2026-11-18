@@ -11,7 +11,9 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.askModel) private var askModelRaw = ClaudeModelOption.haiku.rawValue
     @AppStorage(SettingsKey.refineModel) private var refineModelRaw = ClaudeModelOption.haiku.rawValue
     @AppStorage(SettingsKey.summaryLanguage) private var summaryLanguage = "en"
+    @AppStorage(SettingsKey.answerLanguage) private var answerLanguage = Languages.sameAsTranslation
     @AppStorage(SettingsKey.bilingualAnswers) private var bilingualAnswers = true
+    @AppStorage(SettingsKey.autoKeyTerms) private var autoKeyTerms = true
     @AppStorage(SettingsKey.keepScreenOn) private var keepScreenOn = true
     @AppStorage(SettingsKey.allowBluetoothMic) private var allowBluetoothMic = false
     @AppStorage(SettingsKey.vocabulary) private var vocabulary = ""
@@ -119,14 +121,19 @@ struct SettingsView: View {
                     Picker("Ask model", selection: $askModelRaw) {
                         modelChoices
                     }
-                    Picker("Summary and answer language", selection: $summaryLanguage) {
+                    Picker("Summary language", selection: $summaryLanguage) {
                         ForEach(Languages.translation) { Text($0.name).tag($0.id) }
                     }
-                    Toggle("Answer questions in both Arabic and English", isOn: $bilingualAnswers)
+                    Picker("Ask AI language", selection: $answerLanguage) {
+                        Text("Same as translation language").tag(Languages.sameAsTranslation)
+                        ForEach(Languages.translation) { Text($0.name).tag($0.id) }
+                    }
+                    Toggle("Also answer in the lecture's language", isOn: $bilingualAnswers)
+                    Toggle("Make the key terms list (Excel) after each lecture", isOn: $autoKeyTerms)
                 } header: {
                     Text("AI models")
                 } footer: {
-                    Text("Each task can use Claude or a free model. The ask model also answers Ask AI while recording; Claude Haiku or Groq reply fastest there. Answers adapt to the question: short for quick ones, step by step with examples when you ask to understand something.")
+                    Text("Each task can use Claude or a free model. The ask model also answers Ask AI while recording; Claude Haiku or Groq reply fastest there. Answers adapt to the question: short for quick ones, step by step with examples when you ask to understand something. Ask AI replies in the lecture's translation language (Russian translation, Russian answers) unless you pick a fixed language; with the second option on, the same answer follows in the language the lecture is spoken in. The key terms list uses the ask model and Ask AI's language; a red mark shows on the lecture until you open it.")
                 }
 
                 Section {

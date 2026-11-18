@@ -156,6 +156,7 @@ struct LibraryView: View {
             let lecture = filtered[index]
             if selection == lecture.id { selection = nil }
             LectureStore.deleteFiles(for: lecture)
+            KeyTermsStore.shared.forget(lecture.id)
             context.delete(lecture)
         }
         try? context.save()
@@ -193,18 +194,37 @@ struct LibraryView: View {
 
 private struct LectureRow: View {
     let lecture: Lecture
+    private var keyTerms: KeyTermsStore { KeyTermsStore.shared }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(lecture.title)
-                .font(.headline)
-                .lineLimit(2)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(lecture.title)
+                    .font(.headline)
+                    .lineLimit(2)
+                // A new key terms list nobody has opened yet.
+                if keyTerms.unseen.contains(lecture.id) {
+                    Circle()
+                        .fill(.red)
+                        .frame(width: 9, height: 9)
+                        .accessibilityLabel("New key terms list")
+                }
+            }
             HStack(spacing: 8) {
                 Text(lecture.createdAt, format: .dateTime.day().month(.abbreviated).hour().minute())
                 Text("·")
                 Text(TimeFormat.duration(lecture.duration))
                 if lecture.summary != nil {
                     Image(systemName: "sparkles").accessibilityLabel("Summary ready")
+                }
+                if keyTerms.working.contains(lecture.id) {
+                    Image(systemName: "tablecells")
+                        .symbolEffect(.pulse)
+                        .accessibilityLabel("Making the key terms list")
+                } else if keyTerms.ready.contains(lecture.id) {
+                    Image(systemName: "tablecells")
+                        .foregroundStyle(keyTerms.unseen.contains(lecture.id) ? .red : .secondary)
+                        .accessibilityLabel("Key terms list saved")
                 }
                 if lecture.status == .interrupted {
                     Label("Restored", systemImage: "exclamationmark.triangle")

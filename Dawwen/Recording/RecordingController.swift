@@ -319,6 +319,7 @@ final class RecordingController {
         liveActivity.end()
         try? LectureArchive.write(lecture)
         BackupUploader.shared.enqueue(lecture, includeArchive: true)
+        KeyTermsStore.shared.makeAfterLecture(lecture)
     }
 
     /// The recording screen is going away. Finish what was recorded; stop translating (what is
